@@ -1,6 +1,6 @@
 (() => {
   "use strict";
-  const VERSION = "v1.2";
+  const VERSION = "v1.3";
   const TC = window.TileCipher;
   const $ = (id) => document.getElementById(id);
   $("ver").textContent = VERSION;
@@ -101,21 +101,39 @@
   }
 
   // ---------- 読み取り（別スレッドで実行） ----------
-  const worker = new Worker("worker.js");
-  let jobId = 0, busy = false;
+  // 読み取り役が落ちたり返事をしなかったりしても「読み取り中…」のまま止まらないよう、
+  // 待っている仕事を失敗として返し、読み取り役を作り直す
+  let worker = null, jobId = 0, busy = false;
   const pending = new Map();
-  worker.onmessage = (ev) => {
-    const cb = pending.get(ev.data.id);
-    pending.delete(ev.data.id);
+  function failAll() {
+    for (const [, p] of pending) { clearTimeout(p.timer); p.resolve({ ok: false, error: true }); }
+    pending.clear();
     busy = false;
-    if (cb) cb(ev.data);
-  };
-  function decodeAsync(img, key) {
+  }
+  function startWorker() {
+    worker = new Worker("worker.js");
+    worker.onmessage = (ev) => {
+      const p = pending.get(ev.data.id);
+      pending.delete(ev.data.id);
+      busy = false;
+      if (p) { clearTimeout(p.timer); p.resolve(ev.data); }
+    };
+    worker.onerror = (e) => { if (e && e.preventDefault) e.preventDefault(); restartWorker(); };
+    worker.onmessageerror = restartWorker;
+  }
+  function restartWorker() {
+    try { worker.terminate(); } catch (e) { /* もう止まっている */ }
+    failAll();
+    startWorker();
+  }
+  startWorker();
+  function decodeAsync(img, key, thorough = true) {
     return new Promise((resolve) => {
       const id = ++jobId;
-      pending.set(id, resolve);
+      const timer = setTimeout(restartWorker, 30000);   // 30秒たっても返事がなければやり直す
+      pending.set(id, { resolve, timer });
       busy = true;
-      worker.postMessage({ id, w: img.w, h: img.h, data: img.data, key }, [img.data.buffer]);
+      worker.postMessage({ id, w: img.w, h: img.h, data: img.data, key, thorough }, [img.data.buffer]);
     });
   }
 
@@ -139,19 +157,22 @@
     if (navigator.vibrate) navigator.vibrate(60);
   }
 
-  // 画像やカメラの1コマを、長い辺1000pxまでの RGB データにする
+  // 画像やカメラの1コマ（の一部 rect=[x, y, 幅, 高さ]）を、長い辺 max px までの RGB データにする
   const grab = document.createElement("canvas");
   const gctx = grab.getContext("2d", { willReadFrequently: true });
-  function toRGB(source, sw, sh, max = 1000) {
-    const f = Math.min(1, max / Math.max(sw, sh));
-    const w = Math.round(sw * f), h = Math.round(sh * f);
+  function toRGB(source, sw, sh, max = 1000, rect = [0, 0, sw, sh]) {
+    const [rx, ry, rw, rh] = rect.map(Math.round);
+    const f = Math.min(1, max / Math.max(rw, rh));
+    const w = Math.round(rw * f), h = Math.round(rh * f);
     grab.width = w; grab.height = h;
-    gctx.drawImage(source, 0, 0, w, h);
+    gctx.drawImage(source, rx, ry, rw, rh, 0, 0, w, h);
     const d = gctx.getImageData(0, 0, w, h).data;
     const rgb = new Uint8Array(w * h * 3);
     for (let i = 0, j = 0; i < w * h; i++, j += 3) { rgb[j] = d[i * 4]; rgb[j + 1] = d[i * 4 + 1]; rgb[j + 2] = d[i * 4 + 2]; }
     return { w, h, data: rgb };
   }
+  // 真ん中の部分（縦横 r の割合）
+  const centerRect = ([x, y, w, h], r) => [x + w * (1 - r) / 2, y + h * (1 - r) / 2, w * r, h * r];
 
   // 写真から
   $("photo").addEventListener("change", async (ev) => {
@@ -164,9 +185,20 @@
     $("warped-wrap").hidden = true;
     try {
       const bmp = await createImageBitmap(file);
-      const img = toRGB(bmp, bmp.width, bmp.height);
-      const res = await decodeAsync(img, $("key-read").value);
+      const full = [0, 0, bmp.width, bmp.height];
+      // まず縮めて速く読む。だめなら細かく、最後は真ん中を切り出して読む（離れて撮った写真のため）
+      const steps = [[1000, full], [1600, full], [1600, centerRect(full, 0.6)]];
+      let res = { ok: false };
+      for (let i = 0; i < steps.length && !res.ok; i++) {
+        if (i > 0) $("status").textContent = "もう少し細かく読んでいます…";
+        const [max, rect] = steps[i];
+        if (i > 0 && Math.max(rect[2], rect[3]) <= steps[i - 1][0] && rect === full) continue;   // 小さい写真は同じことになる
+        res = await decodeAsync(toRGB(bmp, bmp.width, bmp.height, max, rect), $("key-read").value);
+        if (res.error) break;
+      }
+      if (bmp.close) bmp.close();
       if (res.ok) success(res);
+      else if (res.error) showResult(false, "読み取りの途中で止まってしまいました。もう一度選んでください。");
       else showResult(false, "合言葉が合っているか、黒い枠が全部写っているか、ピントが合っているかを確かめて、もう一度どうぞ。");
     } catch (e) {
       showResult(false, "この画像は開けませんでした。JPEGかPNGの写真で試してください。");
@@ -182,7 +214,8 @@
     $("result").hidden = false;
     $("status").className = "status"; $("status").textContent = "読み取り中…"; $("decoded").textContent = "";
     const res = await decodeAsync({ w: TC.W, h: TC.H, data: rgb }, $("key-read").value);
-    if (res.ok) success(res); else showResult(false, "合言葉が違うようです。");
+    if (res.ok) success(res);
+    else showResult(false, res.error ? "読み取りの途中で止まってしまいました。もう一度押してください。" : "合言葉が違うようです。");
   });
 
   // カメラで連続読み取り
@@ -224,12 +257,21 @@
     $("cam-start").hidden = false;
     $("cam-stop").hidden = true;
   }
+  // 映像のうち、画面の枠に実際に見えている範囲（object-fit: cover で切れた外側は使わない）
+  function visibleRect(v) {
+    const vw = v.videoWidth, vh = v.videoHeight, ew = v.clientWidth || vw, eh = v.clientHeight || vh;
+    const sc = Math.max(ew / vw, eh / vh);
+    const w = Math.min(vw, ew / sc), h = Math.min(vh, eh / sc);
+    return [(vw - w) / 2, (vh - h) / 2, w, h];
+  }
   async function loop() {
     const v = $("video");
     while (scanning) {
       if (!busy && v.readyState >= 2 && v.videoWidth) {
-        const img = toRGB(v, v.videoWidth, v.videoHeight);
-        const res = await decodeAsync(img, $("key-read").value);
+        // 交互に: 見えている範囲全体 / 真ん中だけを細かく（離れていても読めるように）
+        const vis = visibleRect(v);
+        const img = toRGB(v, v.videoWidth, v.videoHeight, 1000, tries % 2 ? centerRect(vis, 0.6) : vis);
+        const res = await decodeAsync(img, $("key-read").value, false);
         if (!scanning) break;
         tries++;
         if (res.ok) { stopCamera(); success(res); break; }

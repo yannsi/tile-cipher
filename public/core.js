@@ -80,11 +80,29 @@
     }
     return { flag: 1, body: utf8(text) };
   }
+  // 人が入力する文字だけでできているか（偶然チェックをすり抜けた、でたらめな並びをはじく）
+  function plausible(text) {
+    for (const ch of text) {
+      const c = ch.codePointAt(0);
+      if ((c < 0x20 && c !== 0x0a && c !== 0x09) || (c >= 0x7f && c <= 0x9f)) return false;   // 制御文字
+      if ((c >= 0xe000 && c <= 0xf8ff) || c >= 0xf0000 || c === 0xfffd) return false;         // 外字・置き換え文字
+    }
+    return true;
+  }
   function decodeBody(bytes, flag) {
-    if (flag) return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-    const E = root.Encoding;
-    if (E) return E.codeToString(E.convert(Array.from(bytes), { to: "UNICODE", from: "SJIS" }));
-    return new TextDecoder("shift_jis", { fatal: true }).decode(bytes);
+    let text;
+    if (flag) text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    else {
+      const E = root.Encoding;
+      if (E) {
+        text = E.codeToString(E.convert(Array.from(bytes), { to: "UNICODE", from: "SJIS" }));
+        // Shift_JIS として正しい並びなら、文字に戻してもう一度変換すると元と同じになる
+        const back = E.convert(E.stringToCode(text), { to: "SJIS", from: "UNICODE" });
+        if (back.length !== bytes.length || back.some((b, i) => b !== bytes[i])) throw new Error("not sjis");
+      } else text = new TextDecoder("shift_jis", { fatal: true }).decode(bytes);
+    }
+    if (!plausible(text)) throw new Error("implausible");
+    return text;
   }
   function byteLength(text) { return encodeBody(text).body.length; }
 
@@ -502,7 +520,7 @@
     return [0, 1, 2, 3].map((i) => s[(st + i) % 4]);
   }
 
-  function findQuads(img) {
+  function findQuads(img, thorough = true) {
     const { w, h, data } = img;
     const gray = new Float32Array(w * h);
     for (let i = 0; i < w * h; i++) gray[i] = 0.299 * data[i * 3] + 0.587 * data[i * 3 + 1] + 0.114 * data[i * 3 + 2];
@@ -510,9 +528,11 @@
     for (let y = 0; y < h; y++) { let row = 0; for (let x = 0; x < w; x++) { row += gray[y * w + x]; I[(y + 1) * (w + 1) + x + 1] = I[y * (w + 1) + x + 1] + row; } }
     const scale = Math.max(w, h) / 1600;
     const cands = [];
+    // 作業用の配列は1回だけ用意して使い回す（毎回作るとスマホで止まりがちになる）
+    const mask = new Uint8Array(w * h), m2 = new Uint8Array(w * h), label = new Int32Array(w * h), stack = new Int32Array(w * h);
     for (const base of [31, 61, 121]) {
       const r = Math.max(3, Math.round(base * scale / 2));
-      const mask = new Uint8Array(w * h);
+      mask.fill(0); m2.fill(0); label.fill(0);
       for (let y = 0; y < h; y++) {
         const y0 = Math.max(0, y - r), y1 = Math.min(h, y + r + 1);
         for (let x = 0; x < w; x++) {
@@ -522,15 +542,12 @@
         }
       }
       // 途切れをつなぐ（3x3 で太らせる）
-      const m2 = new Uint8Array(w * h);
       for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
         const i = y * w + x;
         if (mask[i] || mask[i - 1] || mask[i + 1] || mask[i - w] || mask[i + w] || mask[i - w - 1] || mask[i - w + 1] || mask[i + w - 1] || mask[i + w + 1]) m2[i] = 1;
       }
       // つながった黒い部分ごとに、各行の左端・右端を集める
-      const label = new Int32Array(w * h);
       let next = 1;
-      const stack = new Int32Array(w * h);
       for (let i0 = 0; i0 < w * h; i0++) {
         if (!m2[i0] || label[i0]) continue;
         const rowMin = new Map(), rowMax = new Map();
@@ -556,7 +573,86 @@
       }
     }
     cands.sort((a, b) => b.area - a.area);
-    return cands.map((c) => c.quad);
+    // しきい値を変えて同じ枠を何度も見つけるので、ほぼ同じ四角形をまとめる。
+    // まとめた中で「ほかと一番そろっているもの」を先に試し、残りは後回しにする
+    // （1つの角だけ少しずれた四角形が混ざることがあり、それを先に試すと無駄になる）
+    const groups = [];
+    for (const c of cands) {
+      const g = groups.find((g) => {
+        const k = g[0], side = (Math.hypot(k[1][0] - k[0][0], k[1][1] - k[0][1]) + Math.hypot(k[2][0] - k[1][0], k[2][1] - k[1][1])) / 2;
+        return k.every((p, i) => Math.hypot(p[0] - c.quad[i][0], p[1] - c.quad[i][1]) < side * 0.03);
+      });
+      if (g) g.push(c.quad); else groups.push([c.quad]);
+    }
+    const first = [], later = [];
+    for (const g of groups) {
+      const med = [0, 1, 2, 3].map((i) => [0, 1].map((k) => { const v = g.map((q) => q[i][k]).sort((a, b) => a - b); return v[v.length >> 1]; }));
+      const dist = (q) => q.reduce((a, p, i) => a + Math.hypot(p[0] - med[i][0], p[1] - med[i][1]), 0);
+      const sorted = g.slice().sort((a, b) => dist(a) - dist(b));
+      const ref = refineQuad(gray, w, h, sorted[0]);
+      if (ref) first.push(ref);
+      first.push(sorted[0]); later.push(...sorted.slice(1));
+    }
+    // thorough=false（カメラの連続読み取り）は各まとまりの代表だけ。1コマを早く終えて次のコマへ
+    return thorough ? first.concat(later) : first;
+  }
+
+  // 四角形の各辺で、黒枠の外側の境目（暗い→明るいに変わる所）を細かく探し直し、
+  // 直線を当てはめて角を求め直す。遠くから撮って枠が細く写ったときに特に効く
+  function refineQuad(gray, w, h, quad) {
+    const at = (x, y) => {
+      if (x < 0 || y < 0 || x >= w - 1 || y >= h - 1) return NaN;
+      const x0 = x | 0, y0 = y | 0, fx = x - x0, fy = y - y0, i = y0 * w + x0;
+      return (gray[i] * (1 - fx) + gray[i + 1] * fx) * (1 - fy) + (gray[i + w] * (1 - fx) + gray[i + w + 1] * fx) * fy;
+    };
+    const cx = quad.reduce((a, p) => a + p[0], 0) / 4, cy = quad.reduce((a, p) => a + p[1], 0) / 4;
+    const lines = [];
+    for (let i = 0; i < 4; i++) {
+      const a = quad[i], b = quad[(i + 1) % 4];
+      const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      if (len < 20) return null;
+      let nx = -(b[1] - a[1]) / len, ny = (b[0] - a[0]) / len;
+      const mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2;
+      if (nx * (mx - cx) + ny * (my - cy) < 0) { nx = -nx; ny = -ny; }   // 外向きにそろえる
+      const reach = Math.max(3, len * 0.025), pts = [];
+      for (let k = 1; k < 24; k++) {
+        const t = k / 24;
+        if (t < 0.08 || t > 0.92) continue;   // 角の近くは使わない
+        const px = a[0] + (b[0] - a[0]) * t, py = a[1] + (b[1] - a[1]) * t;
+        let best = 0, bd = NaN;
+        for (let d = -reach; d <= reach; d += 0.5) {
+          const g = at(px + nx * (d + 1), py + ny * (d + 1)) - at(px + nx * (d - 1), py + ny * (d - 1));
+          if (g > best) { best = g; bd = d; }
+        }
+        if (best > 20) pts.push([px + nx * bd, py + ny * bd]);
+      }
+      if (pts.length < 8) return null;
+      let L = fitLine(pts);
+      const near = pts.filter((p) => Math.abs((p[0] - L[0]) * L[3] - (p[1] - L[1]) * L[2]) < 1.5);
+      if (near.length < 6) return null;
+      lines.push(fitLine(near));
+    }
+    const out = [];
+    for (let i = 0; i < 4; i++) {
+      const p = intersect(lines[(i + 3) % 4], lines[i]);
+      if (!p || Math.hypot(p[0] - quad[i][0], p[1] - quad[i][1]) > 40) return null;
+      out.push(p);
+    }
+    return out;
+  }
+  // 点の並びに直線を当てはめる（[通る点x, y, 向きx, y]）
+  function fitLine(pts) {
+    const n = pts.length, mx = pts.reduce((a, p) => a + p[0], 0) / n, my = pts.reduce((a, p) => a + p[1], 0) / n;
+    let sxx = 0, sxy = 0, syy = 0;
+    for (const [x, y] of pts) { sxx += (x - mx) ** 2; sxy += (x - mx) * (y - my); syy += (y - my) ** 2; }
+    const th = 0.5 * Math.atan2(2 * sxy, sxx - syy);
+    return [mx, my, Math.cos(th), Math.sin(th)];
+  }
+  function intersect(L1, L2) {
+    const det = L1[2] * L2[3] - L1[3] * L2[2];
+    if (Math.abs(det) < 1e-6) return null;
+    const t = ((L2[0] - L1[0]) * L2[3] - (L2[1] - L1[1]) * L2[2]) / det;
+    return [L1[0] + L1[2] * t, L1[1] + L1[3] * t];
   }
 
   // 補正前に、色見本の位置だけを少し拾って「どれかの絵の種類として4色が分かれているか」を見る
@@ -595,14 +691,16 @@
   }
 
   // RGB画像（3ch）から読み取る。成功すると { text, style, warped, scale }、失敗すると null
-  function decode(img, key) {
+  // opts.thorough=false はカメラ用（速さ優先）。写真は既定の true で、候補を残らず試す
+  function decode(img, key, opts = {}) {
+    const thorough = opts.thorough !== false;
     if (img.w === W && img.h === H) {
       const r = readAny(img, 1, key);
       if (r) return { ...r, warped: img, scale: 1 };
     }
     const s = 2;
     const len = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
-    for (const quad of findQuads(img).slice(0, 12)) {
+    for (const quad of findQuads(img, thorough).slice(0, 12)) {
       // 長い辺が横になる向きを先に試す。180度違いは補正した画像を回すだけで済ませる
       const wide = len(quad[0], quad[1]) + len(quad[2], quad[3]) >= len(quad[1], quad[2]) + len(quad[3], quad[0]);
       for (const base of wide ? [0, 1] : [1, 0]) {
@@ -620,7 +718,8 @@
 
   const MAXP = maxPayload("tile");
   const STYLES = Object.fromEntries(Object.entries(LAYOUTS).map(([k, L]) => [k, { name: L.name, maxPayload: maxPayload(k) }]));
-  const api = { W, H, PAL, MAXP, STYLES, maxPayload, encode, toRGBA, decode, byteLength, sha256, SYMBOLS, BW_SYMBOLS, N_WINDOWS };
+  const checkBody = (bytes, flag) => { try { return decodeBody(Uint8Array.from(bytes), flag); } catch (e) { return null; } };
+  const api = { checkBody, W, H, PAL, MAXP, STYLES, maxPayload, encode, toRGBA, decode, byteLength, sha256, SYMBOLS, BW_SYMBOLS, N_WINDOWS };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.TileCipher = api;
 })(typeof window !== "undefined" ? window : globalThis);

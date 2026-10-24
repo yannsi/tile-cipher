@@ -1,6 +1,6 @@
 // オフラインでも開けるよう、アプリのファイルを端末に保存しておく
 // アプリを更新したら CACHE の番号を上げる（v1 → v2）と、新しいファイルに入れ替わる
-const CACHE = "tile-cipher-v3";
+const CACHE = "tile-cipher-v4";
 const APP_FILES = [
   "./", "index.html", "app.js", "core.js", "worker.js", "encoding.min.js", "manifest.webmanifest",
   "icons/icon-192.png", "icons/icon-512.png", "icons/apple-touch-icon.png", "icons/favicon-64.png",
@@ -33,12 +33,20 @@ self.addEventListener("fetch", (e) => {
     return;
   }
 
-  // アプリのファイル: ネットにつながればまず新しいものを、だめなら保存済みを使う
+  // アプリのファイル: まず新しいものを取りに行く。電波が弱くて2.5秒たっても届かないときや、
+  // つながらないときは保存済みを使う（届いた新しいものは次に開いたときのために保存しておく）
   if (url.origin === self.location.origin) {
+    const net = fetch(e.request).then((r) => {
+      if (r.ok) { const copy = r.clone(); caches.open(CACHE).then((c) => c.put(e.request, copy)); }
+      return r;
+    });
+    e.waitUntil(net.catch(() => null));
+    const saved = () => caches.match(e.request, { ignoreSearch: true }).then((r) => r || caches.match("index.html"));
+    const slow = new Promise((resolve) => setTimeout(resolve, 2500)).then(saved);
     e.respondWith(
-      fetch(e.request)
-        .then((r) => { if (r.ok) caches.open(CACHE).then((c) => c.put(e.request, r.clone())); return r; })
-        .catch(() => caches.match(e.request, { ignoreSearch: true }).then((r) => r || caches.match("index.html")))
+      Promise.race([net.catch(saved), slow.then((r) => r || net)])
+        .then((r) => r || net)
+        .catch(saved)
     );
   }
 });

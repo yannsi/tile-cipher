@@ -130,3 +130,24 @@ for (const style of ["tile", "night", "tile-bw", "night-bw"]) test(`写真のよ
   assert.ok(r, "写真から読めなかった");
   assert.strictEqual(r.text, "斜めでも読める");
 });
+
+test("でたらめなバイト列は文字として扱わない（合言葉違いの文字化けを出さない）", () => {
+  let passed = 0, total = 0;
+  for (let t = 0; t < 3000; t++) {
+    const n = 12 + (t % 22), b = crypto.randomBytes(n);
+    total++; if (TC.checkBody(b, t % 2) !== null) passed++;
+  }
+  assert.ok(passed / total < 0.02, `通りすぎ: ${passed}/${total}`);
+  // ふつうの言葉は通る
+  for (const s of ["今日もおつかれさま", "Hello 👋", "改行も\nOK", "①②～髙﨑"]) {
+    const sj = TC.checkBody(Array.from(new TextEncoder().encode(s)), 1);
+    assert.strictEqual(sj, s);
+  }
+});
+
+test("合言葉を300通り間違えても、どれも読めない", () => {
+  for (const style of ["tile", "night", "tile-bw", "night-bw"]) {
+    const img = toRGB(TC.encode("ひみつの話", "right", style));
+    for (let i = 0; i < 75; i++) assert.strictEqual(TC.decode(img, "wrong" + i), null);
+  }
+});

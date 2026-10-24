@@ -114,10 +114,25 @@ def unpack(raw_xored, key, cap=CAP, prefix=b"tile-cipher"):
     n, flag = raw[0] & 0x7F, raw[0] >> 7
     if n > cap - 1 - CHECK or raw[1 + n:1 + n + CHECK] != check_bytes(raw[:1 + n], prefix):
         return None
+    body = raw[1:1 + n]
     try:
-        return raw[1:1 + n].decode("utf-8" if flag else "cp932")
-    except UnicodeDecodeError:
+        text = body.decode("utf-8" if flag else "cp932")
+        if not flag and text.encode("cp932") != body:   # 文字に戻してもう一度変換すると元と同じになるはず
+            return None
+    except (UnicodeDecodeError, UnicodeEncodeError):
         return None
+    return text if plausible(text) else None
+
+
+def plausible(text):
+    """人が入力する文字だけでできているか（偶然チェックをすり抜けた、でたらめな並びをはじく）。core.js と同じ判定"""
+    for ch in text:
+        c = ord(ch)
+        if (c < 0x20 and c not in (0x0A, 0x09)) or 0x7F <= c <= 0x9F:   # 制御文字
+            return False
+        if 0xE000 <= c <= 0xF8FF or c >= 0xF0000 or c == 0xFFFD:       # 外字・置き換え文字
+            return False
+    return True
 
 
 # ================= 夜景（ビルの窓の明かり、1つの窓で2ビット） =================

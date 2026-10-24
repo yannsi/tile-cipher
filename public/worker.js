@@ -2,9 +2,9 @@
 importScripts("encoding.min.js", "core.js");
 
 self.onmessage = (ev) => {
-  const { id, w, h, data, key } = ev.data;
+  const { id, w, h, data, key, thorough } = ev.data;
   let res = null;
-  try { res = self.TileCipher.decode({ w, h, data }, key); } catch (e) { res = null; }
+  try { res = self.TileCipher.decode({ w, h, data }, key, { thorough: thorough !== false }); } catch (e) { res = null; }
   if (res) {
     // 補正後の画像も返す（確認用に表示する）
     const wd = res.warped;
