@@ -1,6 +1,6 @@
 (() => {
   "use strict";
-  const VERSION = "v1.0";
+  const VERSION = "v1.1";
   const TC = window.TileCipher;
   const $ = (id) => document.getElementById(id);
   $("ver").textContent = VERSION;
@@ -24,6 +24,10 @@
   };
   const savedMsg = store.get("msg");
   if (savedMsg !== null) $("msg").value = savedMsg;
+  const styleInputs = Array.from(document.querySelectorAll('input[name="style"]'));
+  const savedStyle = store.get("style");
+  if (savedStyle && TC.STYLES[savedStyle]) styleInputs.forEach((i) => { i.checked = i.value === savedStyle; });
+  const currentStyle = () => (styleInputs.find((i) => i.checked) || styleInputs[0]).value;
 
   // ---------- 作る ----------
   const canvas = document.createElement("canvas");
@@ -35,19 +39,23 @@
   function fileName() {
     const d = new Date();
     const p = (n) => String(n).padStart(2, "0");
-    return `tile-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.png`;
+    return `${currentStyle() === "night" ? "night" : "tile"}-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.png`;
   }
   function render() {
     const text = $("msg").value;
+    const style = currentStyle();
+    const max = TC.maxPayload(style);
     const n = TC.byteLength(text);
-    $("meter-text").textContent = `${n} / ${TC.MAXP} バイト`;
-    $("meter-bar").style.width = Math.min(100, (n / TC.MAXP) * 100) + "%";
-    const over = n > TC.MAXP;
+    $("meter-text").textContent = `${n} / ${max} バイト`;
+    $("meter-bar").style.width = Math.min(100, (n / max) * 100) + "%";
+    $("cap-hint").textContent = `日本語はだいたい1文字2バイト。${TC.STYLES[style].name}は${Math.floor(max / 2)}文字前後まで入ります。`;
+    store.set("style", style);
+    const over = n > max;
     $("meter").classList.toggle("over", over);
     $("share").disabled = over || n === 0;
     store.set("msg", text);
     if (over || n === 0) { currentFile = null; return; }
-    currentIdx = TC.encode(text, $("key-make").value);
+    currentIdx = TC.encode(text, $("key-make").value, style);
     ctx.putImageData(new ImageData(TC.toRGBA(currentIdx), TC.W, TC.H), 0, 0);
     $("code-img").src = canvas.toDataURL("image/png");
     currentFile = null;
@@ -57,6 +65,7 @@
   const schedule = () => { clearTimeout(timer); timer = setTimeout(render, 120); };
   $("msg").addEventListener("input", schedule);
   $("key-make").addEventListener("input", schedule);
+  styleInputs.forEach((i) => i.addEventListener("change", render));
   render();
 
   const canShareFiles = (f) => { try { return !!(navigator.canShare && navigator.share && navigator.canShare({ files: [f] })); } catch (e) { return false; } };
@@ -119,6 +128,7 @@
   }
   function success(res) {
     showResult(true, res.text);
+    if (res.style && TC.STYLES[res.style]) $("status").textContent = `読み取れました（${TC.STYLES[res.style].name}）`;
     showWarped(res.warped);
     if (navigator.vibrate) navigator.vibrate(60);
   }

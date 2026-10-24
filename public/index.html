@@ -60,6 +60,15 @@ h1 .dot { color: var(--red); }
 .tabs { display: grid; grid-template-columns: 1fr 1fr; background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 4px; gap: 4px; }
 .tabs button { font: inherit; font-weight: 700; font-size: 1rem; border: 0; border-radius: 999px; padding: 10px 0; background: transparent; color: var(--muted); cursor: pointer; }
 .tabs button[aria-selected="true"] { background: var(--ink); color: var(--paper); }
+.styles { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.styles label { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 10px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); cursor: pointer; font-size: 0.95rem; }
+.styles input { position: absolute; opacity: 0; pointer-events: none; }
+.styles label:has(input:checked) { border-color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink); }
+.styles label:focus-within { outline: 3px solid var(--yellow); outline-offset: 2px; }
+.styles .sw { width: 22px; height: 16px; border-radius: 3px; flex: none; }
+.sw.tile { background: conic-gradient(var(--red) 0 25%, var(--yellow) 0 50%, #000 0 75%, #fff 0); outline: 1px solid var(--line); }
+.sw.night { background: linear-gradient(#000 0 45%, #000 0) ; position: relative; outline: 1px solid var(--line); }
+.sw.night::after { content: ""; position: absolute; left: 5px; top: 6px; width: 3px; height: 3px; background: var(--yellow); box-shadow: 6px 0 0 #fff, 0 5px 0 #f00, 6px 5px 0 var(--yellow), 12px 3px 0 #fff; }
 button:focus-visible, input:focus-visible, textarea:focus-visible, .filebtn:focus-within { outline: 3px solid var(--yellow); outline-offset: 2px; }
 
 .device { background: var(--bezel); border: 1px solid var(--line); border-radius: 14px; padding: 18px 18px 26px; position: relative; }
@@ -118,7 +127,7 @@ details p { font-size: 0.88rem; color: var(--muted); margin: 8px 0 0; max-width:
 <div class="wrap">
   <header>
     <h1>タイル暗号<span class="dot">.</span></h1>
-    <span class="ver" id="ver">v1.0</span>
+    <span class="ver" id="ver">v1.1</span>
   </header>
 
   <!-- ホーム画面に追加の案内（アプリとして開いているときは出さない） -->
@@ -138,12 +147,19 @@ details p { font-size: 0.88rem; color: var(--muted); margin: 8px 0 0; max-width:
 
   <!-- 作る -->
   <section id="panel-make" class="panel" role="tabpanel" aria-labelledby="tab-make">
-    <div class="device"><img id="code-img" alt="暗号タイルのプレビュー"></div>
+    <div class="device"><img id="code-img" alt="暗号画像のプレビュー"></div>
+    <div class="field">
+      <span class="label">絵の種類</span>
+      <div class="styles" role="radiogroup" aria-label="絵の種類">
+        <label><input type="radio" name="style" id="style-tile" value="tile" checked><span class="sw tile"></span>図形タイル</label>
+        <label><input type="radio" name="style" id="style-night" value="night"><span class="sw night"></span>夜景</label>
+      </div>
+    </div>
     <div class="field">
       <label for="msg">隠す言葉</label>
       <textarea id="msg" rows="2">今日もおつかれさま</textarea>
       <div class="meter" id="meter"><div class="bar"><i id="meter-bar"></i></div><span id="meter-text">0 / 33 バイト</span></div>
-      <span class="hint">日本語はだいたい1文字2バイト。16文字前後まで入ります。</span>
+      <span class="hint" id="cap-hint">日本語はだいたい1文字2バイト。16文字前後まで入ります。</span>
     </div>
     <div class="field">
       <label for="key-make">合言葉 <span class="hint">（なしでもOK）</span></label>
@@ -186,7 +202,7 @@ details p { font-size: 0.88rem; color: var(--muted); margin: 8px 0 0; max-width:
     <button class="btn ghost" id="try-current">いま作った画像で試す</button>
     <details>
       <summary>しくみ</summary>
-      <p>48マスそれぞれが「背景の色・図形の色・図形の形」の組み合わせで64通りあり、1マスで6ビットを運びます。合計36バイトのうち、先頭が長さ、末尾2バイトが読み間違いを見つけるためのチェック用です。中身は合言葉から作った乱数で混ぜてあるので、同じ言葉でも合言葉が違えば別の柄になります。写真は黒い枠で位置を見つけてまっすぐに直し、下の赤と黄の四角で向きと色合いを合わせてから読みます。遊び用の仕組みで、本格的な暗号の強さはありません。</p>
+      <p>48マスそれぞれが「背景の色・図形の色・図形の形」の組み合わせで64通りあり、1マスで6ビットを運びます。合計36バイトのうち、先頭が長さ、末尾2バイトが読み間違いを見つけるためのチェック用です。中身は合言葉から作った乱数で混ぜてあるので、同じ言葉でも合言葉が違えば別の柄になります。夜景の絵では、107個の窓の明かり（消灯・白・赤・黄）が1つにつき2ビットを運び、23バイトまで入ります。写真は黒い枠で位置を見つけてまっすぐに直し、下の赤と黄の四角で向きと色合いを合わせてから、どちらの絵かも自動で見分けて読みます。遊び用の仕組みで、本格的な暗号の強さはありません。</p>
     </details>
   </section>
 </div>

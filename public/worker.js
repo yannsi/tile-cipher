@@ -10,7 +10,7 @@ self.onmessage = (ev) => {
     const wd = res.warped;
     const rgb = new Uint8Array(wd.w * wd.h * 3);
     for (let i = 0; i < rgb.length; i++) rgb[i] = wd.data[i];
-    self.postMessage({ id, ok: true, text: res.text, warped: { w: wd.w, h: wd.h, data: rgb } }, [rgb.buffer]);
+    self.postMessage({ id, ok: true, text: res.text, style: res.style, warped: { w: wd.w, h: wd.h, data: rgb } }, [rgb.buffer]);
   } else {
     self.postMessage({ id, ok: false });
   }

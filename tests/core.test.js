@@ -45,6 +45,26 @@ test("作った画像から同じ言葉が読める", () => {
   }
 });
 
+test("夜景版でも、作った画像から同じ言葉が読める", () => {
+  for (const [text, key] of [["今夜も街は静かです", ""], ["キノコの夜", "sock"], ["Hello 👋", "k"]]) {
+    const r = TC.decode(toRGB(TC.encode(text, key, "night")), key);
+    assert.ok(r, `読めなかった: ${text}`);
+    assert.strictEqual(r.text, text);
+    assert.strictEqual(r.style, "night");
+  }
+});
+
+test("図形タイル版は図形タイルとして見分けられる", () => {
+  const r = TC.decode(toRGB(TC.encode("見分け", "")), "");
+  assert.strictEqual(r.style, "tile");
+});
+
+test("夜景版の容量は図形タイル版より少ない", () => {
+  assert.strictEqual(TC.STYLES.tile.maxPayload, 33);
+  assert.strictEqual(TC.STYLES.night.maxPayload, 23);
+  assert.throws(() => TC.encode("あいうえおかきくけこさし", "", "night"), /長すぎます/);
+});
+
 test("合言葉が違うと読めない", () => {
   const img = toRGB(TC.encode("ひみつ", "right"));
   assert.strictEqual(TC.decode(img, "wrong"), null);
@@ -60,9 +80,9 @@ test("長すぎる言葉は断る", () => {
   assert.throws(() => TC.encode("あいうえおかきくけこさしすせそたち", ""), /長すぎます/);
 });
 
-test("写真のように斜め・くすみ・ぼけがあっても読める", () => {
+for (const style of ["tile", "night"]) test(`写真のように斜め・くすみ・ぼけがあっても読める（${style}）`, () => {
   // 400x300 の画像を、白い縁付きで斜めに置き、色をくすませた 900x700 の「写真」を作る
-  const src = toRGB(TC.encode("斜めでも読める", "photo"));
+  const src = toRGB(TC.encode("斜めでも読める", "photo", style));
   const dull = { 0: [45, 42, 48], 1: [205, 203, 192], 2: [165, 38, 40], 3: [214, 182, 46] };
   const W = 900, H = 700, out = new Uint8Array(W * H * 3).fill(110);
   const corners = [[150, 120], [760, 90], [800, 600], [120, 560]]; // 左上・右上・右下・左下（白い縁の外側）

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """タイル暗号 v2 — 文字を4色の図形タイル（8x6=48マス）に変換し、画像や写真から元に戻す。
 
-  書き込み:  python3 tile_cipher.py encode "メッセージ" -o secret.png [-k 合言葉]
+  書き込み:  python3 tile_cipher.py encode "メッセージ" -o secret.png [-k 合言葉] [--style night]
+             （--style night で夜景の絵。省略すると図形タイル）
   読み取り:  python3 tile_cipher.py decode secret.png [-k 合言葉]
              （電子ペーパーをスマホで撮った写真もそのまま渡せます）
 
@@ -18,7 +19,7 @@
     （遊び用。本格的な暗号の強さはありません）
   - 外周の黒枠で写真の中の位置を見つけ、下の赤・黄の色見本で向きと色合いを合わせる
 """
-import argparse, hashlib, sys
+import argparse, hashlib, math, sys
 import numpy as np
 from PIL import Image, ImageDraw
 
@@ -78,23 +79,24 @@ def keystream(key, n):
     return out[:n]
 
 
-def check_bytes(data):
-    return hashlib.sha256(b"tile-cipher" + data).digest()[:CHECK]
+def check_bytes(data, prefix=b"tile-cipher"):
+    return hashlib.sha256(prefix + data).digest()[:CHECK]
 
 
-def pack(text, key):
+def pack(text, key, cap=CAP, prefix=b"tile-cipher"):
+    maxp = cap - 1 - CHECK
     for flag, enc in ((0, "cp932"), (1, "utf-8")):
         try:
             body = text.encode(enc)
             break
         except UnicodeEncodeError:
             continue
-    if len(body) > MAX_PAYLOAD:
-        raise SystemExit(f"長すぎます（{len(body)}バイト / 最大{MAX_PAYLOAD}バイト。日本語なら約16文字まで）")
+    if len(body) > maxp:
+        raise SystemExit(f"長すぎます（{len(body)}バイト / 最大{maxp}バイト。日本語なら約{maxp // 2}文字まで）")
     raw = bytes([len(body) | (flag << 7)]) + body
-    raw += check_bytes(raw)
-    raw += bytes(CAP - len(raw))
-    return bytes(a ^ b for a, b in zip(raw, keystream(key, CAP)))
+    raw += check_bytes(raw, prefix)
+    raw += bytes(cap - len(raw))
+    return bytes(a ^ b for a, b in zip(raw, keystream(key, cap)))
 
 
 def to_symbols(data):
@@ -107,15 +109,119 @@ def from_symbols(vals):
     return bytes(int(bits[i:i + 8], 2) for i in range(0, len(bits), 8))
 
 
-def unpack(raw_xored, key):
-    raw = bytes(a ^ b for a, b in zip(raw_xored, keystream(key, CAP)))
+def unpack(raw_xored, key, cap=CAP, prefix=b"tile-cipher"):
+    raw = bytes(a ^ b for a, b in zip(raw_xored, keystream(key, cap)))
     n, flag = raw[0] & 0x7F, raw[0] >> 7
-    if n > MAX_PAYLOAD or raw[1 + n:1 + n + CHECK] != check_bytes(raw[:1 + n]):
+    if n > cap - 1 - CHECK or raw[1 + n:1 + n + CHECK] != check_bytes(raw[:1 + n], prefix):
         return None
     try:
         return raw[1:1 + n].decode("utf-8" if flag else "cp932")
     except UnicodeDecodeError:
         return None
+
+
+# ================= 夜景（ビルの窓の明かり、1つの窓で2ビット） =================
+N_SCENE = (20, 20, 379, 259)
+N_PATCH_R = (26, 268, 70, 280)
+N_PATCH_Y = (78, 268, 122, 280)
+N_GROUND, N_WIN, N_PX, N_PY = 246, 10, 16, 18
+N_BUILDINGS = [(26, 58, 118), (88, 44, 70), (136, 78, 150), (218, 44, 56), (266, 64, 104), (334, 40, 140)]
+
+
+def _night_windows():
+    out = []
+    for bx, bw, top in N_BUILDINGS:
+        cols = (bw - 12 + 6) // N_PX
+        gx = bx + (bw - (cols * N_PX - (N_PX - N_WIN))) // 2
+        y = top + 10
+        while y + N_WIN <= N_GROUND - 4:
+            out += [(gx + c * N_PX, y) for c in range(cols)]
+            y += N_PY
+    return out
+
+
+N_WINDOWS = _night_windows()
+N_CAP = len(N_WINDOWS) * 2 // 8
+N_PREFIX = b"tile-cipher-night"
+
+
+def _lcg(seed):
+    s = seed & 0xFFFFFFFF
+    def nxt():
+        nonlocal s
+        s = (s * 1664525 + 1013904223) & 0xFFFFFFFF
+        return s / 4294967296
+    return nxt
+
+
+def render_night(states):
+    """アプリ（core.js）とまったく同じ絵を、色番号(0-3)の配列として描く"""
+    idx = np.ones((H, W), dtype=np.uint8)
+
+    def rect(x0, y0, x1, y1, c):
+        idx[max(y0, 0):y1 + 1, max(x0, 0):x1 + 1] = c
+
+    def ell(x0, y0, x1, y1, c):
+        cx, cy, rx, ry = (x0 + x1 + 1) / 2, (y0 + y1 + 1) / 2, (x1 + 1 - x0) / 2, (y1 + 1 - y0) / 2
+        yy, xx = np.mgrid[0:H, 0:W]
+        m = (((xx + 0.5 - cx) / rx) ** 2 + ((yy + 0.5 - cy) / ry) ** 2) <= 1
+        idx[m] = c
+
+    def setp(x, y, c):
+        if 0 <= x < W and 0 <= y < H:
+            idx[y, x] = c
+
+    b = BORDER
+    rect(b[0], b[1], b[2], b[1] + BORDER_W - 1, 0); rect(b[0], b[3] - BORDER_W + 1, b[2], b[3], 0)
+    rect(b[0], b[1], b[0] + BORDER_W - 1, b[3], 0); rect(b[2] - BORDER_W + 1, b[1], b[2], b[3], 0)
+    rect(*N_SCENE, 0)
+    rnd = _lcg(7)
+    for _ in range(46):
+        x = N_SCENE[0] + 4 + int(rnd() * (N_SCENE[2] - N_SCENE[0] - 8))
+        y = N_SCENE[1] + 4 + int(rnd() * (150 - N_SCENE[1] - 4))
+        big = rnd() < 0.2
+        if any(bx - 4 <= x <= bx + bw + 4 and y >= top - 6 for bx, bw, top in N_BUILDINGS):
+            continue
+        if math.hypot(x - 62, y - 54) < 26:
+            continue
+        if big:
+            for dd in range(-2, 3):
+                setp(x + dd, y, 1); setp(x, y + dd, 1)
+        else:
+            setp(x, y, 1)
+    ell(44, 36, 80, 72, 3); ell(54, 30, 90, 66, 0)
+    for bx, bw, top in N_BUILDINGS:
+        rect(bx, top, bx + bw, N_GROUND, 1); rect(bx + 1, top + 1, bx + bw - 1, N_GROUND - 1, 0)
+    rect(240, 38, 240, 56, 1); ell(237, 34, 243, 40, 2)
+    rect(110, 58, 110, 70, 1); ell(108, 55, 112, 59, 2)
+    rect(N_SCENE[0], N_GROUND, N_SCENE[2], N_GROUND, 1)
+    for x in range(40, 370, 46):
+        rect(x, N_GROUND + 1, x, N_GROUND + 6, 1)
+    for x in range(30, 375, 20):
+        rect(x, N_GROUND + 7, x + 8, N_GROUND + 7, 3)
+    for (x, y), st in zip(N_WINDOWS, states):
+        if st:
+            rect(x, y, x + N_WIN - 1, y + N_WIN - 1, st)
+    rect(*N_PATCH_R, 2); rect(*N_PATCH_Y, 3)
+    return idx
+
+
+def encode_night(text, key):
+    data = pack(text, key, N_CAP, N_PREFIX)
+    bits = "".join(f"{b_:08b}" for b_ in data).ljust(2 * len(N_WINDOWS), "0")
+    states = [int(bits[i:i + 2], 2) for i in range(0, 2 * len(N_WINDOWS), 2)]
+    idx = render_night(states)
+    return Image.fromarray(np.array(COLORS, dtype=np.uint8)[idx])
+
+
+def read_night(arr, s, palette):
+    pal = np.array(palette)
+    states = []
+    for x, y in N_WINDOWS:
+        m = arr[int((y + 3) * s):int((y + N_WIN - 3) * s), int((x + 3) * s):int((x + N_WIN - 3) * s)].reshape(-1, 3).mean(axis=0)
+        states.append(int(((pal - m) ** 2).sum(axis=1).argmin()))
+    bits = "".join(f"{v:02b}" for v in states)
+    return bytes(int(bits[i:i + 8], 2) for i in range(0, N_CAP * 8, 8))
 
 
 def encode(text, key):
@@ -192,6 +298,26 @@ def read_layout(arr, scale):
     return from_symbols(vals)
 
 
+def read_any(arr, s, key):
+    """補正済み画像を、図形タイル・夜景のどちらかとして読めるか試す"""
+    def med(box):
+        x0, y0, x1, y1 = box
+        return np.median(arr[int(y0 * s):int(y1 * s), int(x0 * s):int(x1 * s)].reshape(-1, 3), axis=0)
+
+    raw = read_layout(arr, s)
+    if raw is not None and (text := unpack(raw, key)) is not None:
+        return text
+    pal = np.array([
+        med((40, BORDER[1] + 1, 360, BORDER[1] + BORDER_W - 1)),
+        med((140, 266, 360, 284)),
+        med((N_PATCH_R[0] + 3, N_PATCH_R[1] + 2, N_PATCH_R[2] - 3, N_PATCH_R[3] - 2)),
+        med((N_PATCH_Y[0] + 3, N_PATCH_Y[1] + 2, N_PATCH_Y[2] - 3, N_PATCH_Y[3] - 2)),
+    ])
+    if min(np.linalg.norm(pal[a] - pal[b]) for a in range(4) for b in range(a + 1, 4)) < 40:
+        return None
+    return unpack(read_night(arr, s, pal), key, N_CAP, N_PREFIX)
+
+
 def order_corners(pts):
     pts = np.array(pts, dtype=np.float32).reshape(4, 2)
     c = pts.mean(axis=0)
@@ -236,10 +362,7 @@ def decode_photo(im, key, debug=None):
             src = np.roll(quad, rot, axis=0)
             M = cv2.getPerspectiveTransform(src, dst)
             warped = cv2.warpPerspective(img, M, (W * s, H * s)).astype(float)
-            raw = read_layout(warped, s)
-            if raw is None:
-                continue
-            text = unpack(raw, key)
+            text = read_any(warped, s, key)
             if text is not None:
                 if debug:
                     Image.fromarray(warped.astype(np.uint8)).save(debug)
@@ -250,11 +373,9 @@ def decode_photo(im, key, debug=None):
 def decode(im, key, debug=None):
     # 生成した画像そのもの（400x300）ならそのまま読む
     if im.size == (W, H):
-        raw = read_layout(np.asarray(im.convert("RGB"), dtype=float), 1)
-        if raw is not None:
-            text = unpack(raw, key)
-            if text is not None:
-                return text
+        text = read_any(np.asarray(im.convert("RGB"), dtype=float), 1, key)
+        if text is not None:
+            return text
     return decode_photo(im, key, debug)
 
 
@@ -263,12 +384,13 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     e = sub.add_parser("encode", help="文字から暗号画像を作る")
     e.add_argument("text"); e.add_argument("-o", "--out", default="secret.png"); e.add_argument("-k", "--key", default="")
+    e.add_argument("--style", choices=["tile", "night"], default="tile", help="tile=図形タイル（既定）, night=夜景")
     dd = sub.add_parser("decode", help="画像や写真から文字に戻す")
     dd.add_argument("image"); dd.add_argument("-k", "--key", default="")
     dd.add_argument("--debug", help="補正後の画像をこのファイル名で保存する")
     a = ap.parse_args()
     if a.cmd == "encode":
-        encode(a.text, a.key).save(a.out)
+        (encode_night if a.style == "night" else encode)(a.text, a.key).save(a.out)
         print(f"保存しました: {a.out}")
     else:
         from PIL import ImageOps
