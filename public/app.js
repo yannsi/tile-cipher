@@ -1,6 +1,6 @@
 (() => {
   "use strict";
-  const VERSION = "v1.1";
+  const VERSION = "v1.2";
   const TC = window.TileCipher;
   const $ = (id) => document.getElementById(id);
   $("ver").textContent = VERSION;
@@ -25,9 +25,13 @@
   const savedMsg = store.get("msg");
   if (savedMsg !== null) $("msg").value = savedMsg;
   const styleInputs = Array.from(document.querySelectorAll('input[name="style"]'));
-  const savedStyle = store.get("style");
-  if (savedStyle && TC.STYLES[savedStyle]) styleInputs.forEach((i) => { i.checked = i.value === savedStyle; });
-  const currentStyle = () => (styleInputs.find((i) => i.checked) || styleInputs[0]).value;
+  const colorInputs = Array.from(document.querySelectorAll('input[name="color"]'));
+  const savedStyle = store.get("style"), savedColor = store.get("color");
+  if (savedStyle) styleInputs.forEach((i) => { i.checked = i.value === savedStyle.replace("-bw", ""); });
+  if (savedColor) colorInputs.forEach((i) => { i.checked = i.value === savedColor; });
+  const picked = (list) => (list.find((i) => i.checked) || list[0]).value;
+  const isBW = () => picked(colorInputs) === "bw";
+  const currentStyle = () => picked(styleInputs) + (isBW() ? "-bw" : "");
 
   // ---------- 作る ----------
   const canvas = document.createElement("canvas");
@@ -39,7 +43,7 @@
   function fileName() {
     const d = new Date();
     const p = (n) => String(n).padStart(2, "0");
-    return `${currentStyle() === "night" ? "night" : "tile"}-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.png`;
+    return `${currentStyle()}-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.png`;
   }
   function render() {
     const text = $("msg").value;
@@ -49,7 +53,9 @@
     $("meter-text").textContent = `${n} / ${max} バイト`;
     $("meter-bar").style.width = Math.min(100, (n / max) * 100) + "%";
     $("cap-hint").textContent = `日本語はだいたい1文字2バイト。${TC.STYLES[style].name}は${Math.floor(max / 2)}文字前後まで入ります。`;
-    store.set("style", style);
+    store.set("style", picked(styleInputs)); store.set("color", picked(colorInputs));
+    $("make-device").classList.toggle("is-bw", isBW());
+    $("share-note").textContent = `保存した画像をEZ Signのアプリで選び、スマホを電子ペーパーにかざします（${isBW() ? "2色版は3秒" : "4色版は25秒"}ほど）。`;
     const over = n > max;
     $("meter").classList.toggle("over", over);
     $("share").disabled = over || n === 0;
@@ -65,7 +71,7 @@
   const schedule = () => { clearTimeout(timer); timer = setTimeout(render, 120); };
   $("msg").addEventListener("input", schedule);
   $("key-make").addEventListener("input", schedule);
-  styleInputs.forEach((i) => i.addEventListener("change", render));
+  styleInputs.concat(colorInputs).forEach((i) => i.addEventListener("change", render));
   render();
 
   const canShareFiles = (f) => { try { return !!(navigator.canShare && navigator.share && navigator.canShare({ files: [f] })); } catch (e) { return false; } };

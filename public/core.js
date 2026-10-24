@@ -99,13 +99,19 @@
     const ks = keystream(key, cap);
     return raw.map((b, i) => b ^ ks[i]);
   }
-  function unpack(xored, key, cap, prefix) {
+  // strict=true は読み直し用: 空き部分（0のはず）もほぼ0であることを求めて、取り違えを防ぐ
+  function unpack(xored, key, cap, prefix, strict = false) {
     const ks = keystream(key, cap);
     const raw = xored.map((b, i) => b ^ ks[i]);
     const n = raw[0] & 0x7f, flag = raw[0] >> 7;
     if (n > cap - 1 - CHECK) return null;
     const chk = checkBytes(raw.slice(0, 1 + n), prefix);
     for (let i = 0; i < CHECK; i++) if (raw[1 + n + i] !== chk[i]) return null;
+    if (strict) {
+      let ones = 0, bits = 0;
+      for (let i = 1 + n + CHECK; i < cap; i++) { bits += 8; for (let v = raw[i]; v; v >>= 1) ones += v & 1; }
+      if (ones > bits / 10) return null;
+    }
     try { return decodeBody(raw.slice(1, 1 + n), flag); } catch (e) { return null; }
   }
   function toVals(bytes, bitsPer, count) {
@@ -127,9 +133,14 @@
     const dx = (px - cx) / rx, dy = (py - cy) / ry;
     return dx * dx + dy * dy <= 1;
   }
-  function shapeHit(sh, px, py, t) {
+  function shapeHit(sh, px, py, t, r = 0) {
+    for (let i = 0; i < r; i++) [px, py] = [py, t - px];   // 90度ずつ回す
     const u = t / 50;
     switch (sh) {
+      case "ring": return inEll(px, py, 6 * u, 6 * u, t - 6 * u, t - 6 * u) && !inEll(px, py, 17 * u, 17 * u, t - 17 * u, t - 17 * u);
+      case "square": return px >= 15 * u && px <= t - 15 * u && py >= 15 * u && py <= t - 15 * u;
+      case "checker": return (px < t / 2) === (py < t / 2);
+      case "bar": return py >= 18 * u && py <= t - 18 * u;
       case "circle": return inEll(px, py, 9 * u, 9 * u, t - 10 * u, t - 10 * u);
       case "quarter": return inEll(px, py, -t, -t, t - 4 * u, t - 4 * u);
       case "half": { const y0 = t / 2 - 2 * u, y1 = t * 1.5 - 3 * u; return py <= (y0 + y1) / 2 && inEll(px, py, 2 * u, y0, t - 3 * u, y1); }
@@ -144,7 +155,15 @@
     }
     return false;
   }
-  const tileColor = (sym, px, py, t) => (shapeHit(sym[2], px, py, t) ? sym[1] : sym[0]);
+  const tileColor = (sym, px, py, t) => (shapeHit(sym[2], px, py, t, sym[3] || 0) ? sym[1] : sym[0]);
+
+  // 白黒用の32種類: [背景, 図形の色, 図形, 向き]。見分けやすいものだけを選んである
+  const BW_SYMBOLS = [[0,1,"circle",0],[1,0,"circle",0],[1,0,"half",0],[0,1,"checker",0],[0,1,"stripes",0],[0,1,"half",0],[1,0,"checker",0],[0,1,"half",3],
+    [0,1,"dots",0],[1,0,"stripes",0],[1,0,"stripes",1],[1,0,"dots",0],[0,1,"stripes",1],[1,0,"half",3],[0,1,"ring",0],[1,0,"ring",0],
+    [1,0,"quarter",0],[0,1,"quarter",0],[0,1,"bar",0],[0,1,"bar",1],[1,0,"bar",0],[1,0,"bar",1],[1,0,"quarter",1],[1,0,"quarter",2],
+    [1,0,"quarter",3],[0,1,"quarter",1],[0,1,"quarter",2],[0,1,"quarter",3],[0,1,"square",0],[1,0,"square",0],[0,1,"triangle",0],[0,1,"triangle",1]];
+  const BW_CAP = Math.floor(COLS * ROWS * 5 / 8);   // 30バイト
+  const BW_GY = 24;   // 白黒版は色見本がいらないので、タイルを上下の真ん中に置いて上下の余白を広げる
   const inBox = (x, y, b) => x >= b[0] && x <= b[2] && y >= b[1] && y <= b[3];
 
   // 色番号(0-3)の画像に描くための小さな道具
@@ -166,37 +185,37 @@
   }
 
   // ---------- 絵の種類1: 図形タイル（8x6=48マス、1マス6ビット） ----------
-  function renderTile(vals) {
+  function renderTile(vals, symbols = SYMBOLS, patches = true, gy = GY) {
     const cv = canvasIdx(), idx = cv.idx;
     cv.border();
     const gw = COLS * T, gh = ROWS * T;
     for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-      const lx = x - GX, ly = y - GY;
+      const lx = x - GX, ly = y - gy;
       if (lx >= 0 && lx < gw && ly >= 0 && ly < gh) {
         const col = Math.floor(lx / T), row = Math.floor(ly / T);
-        let c = tileColor(SYMBOLS[vals[row * COLS + col]], lx - col * T + 0.5, ly - row * T + 0.5, T);
+        let c = tileColor(symbols[vals[row * COLS + col]], lx - col * T + 0.5, ly - row * T + 0.5, T);
         const mx = lx % T, my = ly % T;
         if (mx === 0 || mx === T - 1 || my === 0 || my === T - 1) c = 0;
         idx[y * W + x] = c;
       }
       if (((lx === -1 || lx === gw) && ly >= -1 && ly <= gh) || ((ly === -1 || ly === gh) && lx >= -1 && lx <= gw)) idx[y * W + x] = 0;
     }
-    cv.rect(...PATCH_R, 2); cv.rect(...PATCH_Y, 3);
+    if (patches) { cv.rect(...PATCH_R, 2); cv.rect(...PATCH_Y, 3); }
     return idx;
   }
 
   function classify(m, pal) {
     let best = 0, bd = Infinity;
-    for (let k = 0; k < 4; k++) {
+    for (let k = 0; k < pal.length; k++) {
       const p = pal[k], d = (m[0] - p[0]) ** 2 + (m[1] - p[1]) ** 2 + (m[2] - p[2]) ** 2;
       if (d < bd) { bd = d; best = k; }
     }
     return best;
   }
   // 見本（64種）の色ラベル。タイル内側を GN x GN に分けて、各マスの平均色で決める
-  const TEMPLATES = (() => {
+  const makeTemplates = (symbols, pal) => {
     const inner = T - 2 * INSET, SS = 6, out = [];
-    for (const sym of SYMBOLS) {
+    for (const sym of symbols) {
       const lab = new Uint8Array(GN * GN);
       for (let j = 0; j < GN; j++) for (let i = 0; i < GN; i++) {
         const m = [0, 0, 0]; let n = 0;
@@ -205,19 +224,21 @@
           const c = PAL[tileColor(sym, px, py, T)];
           m[0] += c[0]; m[1] += c[1]; m[2] += c[2]; n++;
         }
-        lab[j * GN + i] = classify([m[0] / n, m[1] / n, m[2] / n], PAL);
+        lab[j * GN + i] = classify([m[0] / n, m[1] / n, m[2] / n], pal);
       }
       out.push(lab);
     }
     return out;
-  })();
-  function readTile(img, s, pal) {
+  };
+  const TEMPLATES = makeTemplates(SYMBOLS, PAL);
+  const BW_TEMPLATES = makeTemplates(BW_SYMBOLS, PAL.slice(0, 2));
+  function readTile(img, s, pal, templates = TEMPLATES, bitsPer = 6, cap = CAP, gy = GY) {
     const { w, data } = img;
-    const vals = [];
+    const vals = [], seconds = [], margins = [];
     const size = (T - 2 * INSET) * s;
     const lab = new Uint8Array(GN * GN);
     for (let t = 0; t < COLS * ROWS; t++) {
-      const x0 = (GX + (t % COLS) * T + INSET) * s, y0 = (GY + Math.floor(t / COLS) * T + INSET) * s;
+      const x0 = (GX + (t % COLS) * T + INSET) * s, y0 = (gy + Math.floor(t / COLS) * T + INSET) * s;
       for (let j = 0; j < GN; j++) for (let i = 0; i < GN; i++) {
         const ys = Math.floor(y0 + j * size / GN), ye = Math.floor(y0 + (j + 1) * size / GN);
         const xs = Math.floor(x0 + i * size / GN), xe = Math.floor(x0 + (i + 1) * size / GN);
@@ -227,15 +248,21 @@
         }
         lab[j * GN + i] = classify([m[0] / n, m[1] / n, m[2] / n], pal);
       }
-      let best = 0, bm = Infinity;
-      for (let k = 0; k < 64; k++) {
-        const tp = TEMPLATES[k]; let mm = 0;
+      let best = 0, bm = Infinity, second = 0, sm = Infinity;
+      for (let k = 0; k < templates.length; k++) {
+        const tp = templates[k]; let mm = 0;
         for (let q = 0; q < GN * GN; q++) if (tp[q] !== lab[q]) mm++;
-        if (mm < bm) { bm = mm; best = k; }
+        if (mm < bm) { second = best; sm = bm; bm = mm; best = k; }
+        else if (mm < sm) { sm = mm; second = k; }
       }
-      vals.push(best);
+      vals.push(best); seconds.push(second); margins.push(sm - bm);
     }
-    return fromVals(vals, 6, CAP);
+    // 読み直し用: 自信のないマスを1つずつ2番目の候補に入れ替えたもの
+    const order = margins.map((m, i) => [m, i]).sort((a, b) => a[0] - b[0]).slice(0, 6).map(([, i]) => i);
+    const alts = order.map((i) => { const v = vals.slice(); v[i] = seconds[i]; return () => fromVals(v, bitsPer, cap); });
+    const out = fromVals(vals, bitsPer, cap);
+    out.alts = alts;
+    return out;
   }
 
   // ---------- 絵の種類2: 夜景（ビルの窓の明かり、1つの窓で2ビット） ----------
@@ -256,7 +283,9 @@
   const N_CAP = Math.floor(N_WINDOWS.length * 2 / 8);
   // 星の位置を決める簡単な乱数（Python版と同じ並びになる）
   function lcg(seed) { let s = seed >>> 0; return () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; }; }
-  function renderNight(states) {
+  // bw=true のとき白黒版: 月・灯り・道の線を白に。窓は 0消灯 1全部点灯 2左半分 3右半分（カーテン）
+  function renderNight(states, bw = false) {
+    const Y_ = bw ? 1 : 3, R_ = bw ? 1 : 2;
     const cv = canvasIdx();
     cv.border();
     cv.rect(...N_SCENE, 0);
@@ -270,17 +299,24 @@
       if (big) { for (let d = -2; d <= 2; d++) { cv.set(x + d, y, 1); cv.set(x, y + d, 1); } }
       else cv.set(x, y, 1);
     }
-    cv.ell(44, 36, 80, 72, 3); cv.ell(54, 30, 90, 66, 0);            // 三日月
+    cv.ell(44, 36, 80, 72, Y_); cv.ell(54, 30, 90, 66, 0);           // 三日月
     for (const [bx, bw, top] of N_BUILDINGS) {
       cv.rect(bx, top, bx + bw, N_GROUND, 1); cv.rect(bx + 1, top + 1, bx + bw - 1, N_GROUND - 1, 0);
     }
-    cv.rect(240, 38, 240, 56, 1); cv.ell(237, 34, 243, 40, 2);       // アンテナと赤い灯
-    cv.rect(110, 58, 110, 70, 1); cv.ell(108, 55, 112, 59, 2);
+    cv.rect(240, 38, 240, 56, 1); cv.ell(237, 34, 243, 40, R_);      // アンテナと灯
+    cv.rect(110, 58, 110, 70, 1); cv.ell(108, 55, 112, 59, R_);
     cv.rect(N_SCENE[0], N_GROUND, N_SCENE[2], N_GROUND, 1);           // 地面
     for (let x = 40; x < 370; x += 46) cv.rect(x, N_GROUND + 1, x, N_GROUND + 6, 1);
-    for (let x = 30; x < 375; x += 20) cv.rect(x, N_GROUND + 7, x + 8, N_GROUND + 7, 3);
-    N_WINDOWS.forEach(([x, y], i) => { if (states[i]) cv.rect(x, y, x + N_WIN - 1, y + N_WIN - 1, states[i]); });
-    cv.rect(...N_PATCH_R, 2); cv.rect(...N_PATCH_Y, 3);
+    for (let x = 30; x < 375; x += 20) cv.rect(x, N_GROUND + 7, x + 8, N_GROUND + 7, Y_);
+    N_WINDOWS.forEach(([x, y], i) => {
+      const st = states[i];
+      if (!st) return;
+      if (!bw) cv.rect(x, y, x + N_WIN - 1, y + N_WIN - 1, st);
+      else if (st === 1) cv.rect(x, y, x + N_WIN - 1, y + N_WIN - 1, 1);
+      else if (st === 2) cv.rect(x, y, x + 4, y + N_WIN - 1, 1);
+      else cv.rect(x + 5, y, x + N_WIN - 1, y + N_WIN - 1, 1);
+    });
+    if (!bw) { cv.rect(...N_PATCH_R, 2); cv.rect(...N_PATCH_Y, 3); }
     return cv.idx;
   }
   function readNight(img, s, pal) {
@@ -292,6 +328,22 @@
           const o = (yy * w + xx) * 3; m[0] += data[o]; m[1] += data[o + 1]; m[2] += data[o + 2]; n++;
         }
       return classify([m[0] / n, m[1] / n, m[2] / n], pal);
+    });
+    return fromVals(vals, 2, N_CAP);
+  }
+  function readNightBW(img, s, pal) {
+    const { w, data } = img;
+    const half = (x0, x1, y0, y1) => {
+      const m = [0, 0, 0]; let n = 0;
+      for (let yy = Math.floor(y0 * s); yy < Math.floor(y1 * s); yy++)
+        for (let xx = Math.floor(x0 * s); xx < Math.floor(x1 * s); xx++) {
+          const o = (yy * w + xx) * 3; m[0] += data[o]; m[1] += data[o + 1]; m[2] += data[o + 2]; n++;
+        }
+      return classify([m[0] / n, m[1] / n, m[2] / n], pal);
+    };
+    const vals = N_WINDOWS.map(([x, y]) => {
+      const l = half(x + 1, x + 4, y + 2, y + N_WIN - 2), r = half(x + 6, x + 9, y + 2, y + N_WIN - 2);
+      return l && r ? 1 : l ? 2 : r ? 3 : 0;
     });
     return fromVals(vals, 2, N_CAP);
   }
@@ -310,6 +362,17 @@
       pal: [[40, BORDER[1] + 1, 360, BORDER[1] + BW - 1], [140, 266, 360, 284], inner(N_PATCH_R), inner(N_PATCH_Y)],
       render: (bytes) => renderNight(toVals(bytes, 2, N_WINDOWS.length)), read: readNight,
     },
+    "tile-bw": {
+      name: "白黒の図形タイル", cap: BW_CAP, prefix: "tile-cipher-bw",
+      pal: [[40, BORDER[1] + 1, 360, BORDER[1] + BW - 1], [14, 40, 28, 260]],
+      render: (bytes) => renderTile(toVals(bytes, 5, COLS * ROWS), BW_SYMBOLS, false, BW_GY),
+      read: (img, s, pal) => readTile(img, s, pal, BW_TEMPLATES, 5, BW_CAP, BW_GY),
+    },
+    "night-bw": {
+      name: "白黒の夜景", cap: N_CAP, prefix: "tile-cipher-night-bw",
+      pal: [[40, BORDER[1] + 1, 360, BORDER[1] + BW - 1], [140, 266, 360, 284]],
+      render: (bytes) => renderNight(toVals(bytes, 2, N_WINDOWS.length), true), read: readNightBW,
+    },
   };
   const maxPayload = (style = "tile") => LAYOUTS[style].cap - 1 - CHECK;
 
@@ -326,25 +389,36 @@
   // 補正済み画像（400x300 の s 倍）から、どれかの絵の種類として読めるか試す
   function readAny(img, s, key) {
     const { w, data } = img;
+    const cache = new Map();
     function med(box) {
+      const k = box.join(",");
+      if (cache.has(k)) return cache.get(k);
+      const x0 = Math.floor(box[0] * s), x1 = Math.floor(box[2] * s), y0 = Math.floor(box[1] * s), y1 = Math.floor(box[3] * s);
+      // 600点ほどに間引く。細長い場所は長い方向だけ間引く（端のぼけた所ばかり拾わないように）
+      const step = Math.max(1, Math.floor(((x1 - x0) * (y1 - y0)) / 600 / Math.min(x1 - x0, y1 - y0)));
+      const sx = x1 - x0 >= y1 - y0 ? step : 1, sy = x1 - x0 >= y1 - y0 ? 1 : step;
       const ch = [[], [], []];
-      for (let y = Math.floor(box[1] * s); y < Math.floor(box[3] * s); y++)
-        for (let x = Math.floor(box[0] * s); x < Math.floor(box[2] * s); x++) {
-          const o = (y * w + x) * 3; ch[0].push(data[o]); ch[1].push(data[o + 1]); ch[2].push(data[o + 2]);
-        }
-      return ch.map((a) => { a.sort((p, q) => p - q); return a[a.length >> 1]; });
+      for (let y = y0; y < y1; y += sy) for (let x = x0; x < x1; x += sx) {
+        const o = (y * w + x) * 3; ch[0].push(data[o]); ch[1].push(data[o + 1]); ch[2].push(data[o + 2]);
+      }
+      const r = ch.map((a) => { const f = Float32Array.from(a).sort(); return f[f.length >> 1]; });
+      cache.set(k, r);
+      return r;
     }
     for (const [style, L] of Object.entries(LAYOUTS)) {
       const pal = L.pal.map(med);
       if (!distinct(pal)) continue;
-      const text = unpack(L.read(img, s, pal), key, L.cap, L.prefix);
+      const bytes = L.read(img, s, pal);
+      let text = unpack(bytes, key, L.cap, L.prefix);
+      for (const alt of bytes.alts || []) { if (text !== null) break; text = unpack(alt(), key, L.cap, L.prefix, true); }
       if (text !== null) return { text, style };
     }
     return null;
   }
   function distinct(pal) {
-    for (let a = 0; a < 4; a++) for (let b = a + 1; b < 4; b++)
-      if (Math.hypot(pal[a][0] - pal[b][0], pal[a][1] - pal[b][1], pal[a][2] - pal[b][2]) < 40) return false;
+    const need = pal.length === 2 ? 60 : 40;   // 白黒は白と黒の差がはっきりあるはず
+    for (let a = 0; a < pal.length; a++) for (let b = a + 1; b < pal.length; b++)
+      if (Math.hypot(pal[a][0] - pal[b][0], pal[a][1] - pal[b][1], pal[a][2] - pal[b][2]) < need) return false;
     return true;
   }
 
@@ -501,11 +575,23 @@
       }
       return ch.map((a) => { a.sort((p, q) => p - q); return a[a.length >> 1]; });
     }
+    // 黒枠の4辺がどれも同じくらい暗いか（違う四角形を拾っていないか）
+    const sides = [[40, 5, 360, 9], [40, 290, 360, 294], [5, 40, 9, 260], [390, 40, 394, 260]].map(sample);
+    if (sides.some((p) => !p)) return false;
+    const lum = (p) => 0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2];
+    const ls = sides.map(lum);
     for (const L of Object.values(LAYOUTS)) {
       const pal = L.pal.map((b, i) => sample(i === 0 ? [b[0], b[1] + 1, b[2], b[3] - 1] : b));
-      if (pal.every((p) => p) && distinct(pal)) return true;
+      if (!pal.every((p) => p) || !distinct(pal)) continue;
+      if (ls.every((l) => l < lum(pal[1]) - 50)) return true;
     }
     return false;
+  }
+
+  function rotate180(img) {
+    const { w, h, data } = img, out = new Float32Array(data.length), n = w * h;
+    for (let i = 0; i < n; i++) { const j = n - 1 - i; out[j * 3] = data[i * 3]; out[j * 3 + 1] = data[i * 3 + 1]; out[j * 3 + 2] = data[i * 3 + 2]; }
+    return { w, h, data: out };
   }
 
   // RGB画像（3ch）から読み取る。成功すると { text, style, warped, scale }、失敗すると null
@@ -515,13 +601,18 @@
       if (r) return { ...r, warped: img, scale: 1 };
     }
     const s = 2;
+    const len = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
     for (const quad of findQuads(img).slice(0, 12)) {
-      for (let rot = 0; rot < 4; rot++) {
-        const q = [0, 1, 2, 3].map((i) => quad[(i + rot) % 4]);
-        if (!quickCheck(img, q, s)) continue;
+      // 長い辺が横になる向きを先に試す。180度違いは補正した画像を回すだけで済ませる
+      const wide = len(quad[0], quad[1]) + len(quad[2], quad[3]) >= len(quad[1], quad[2]) + len(quad[3], quad[0]);
+      for (const base of wide ? [0, 1] : [1, 0]) {
+        const q = [0, 1, 2, 3].map((i) => quad[(i + base) % 4]);
+        const q2 = [0, 1, 2, 3].map((i) => quad[(i + base + 2) % 4]);
+        const ok1 = quickCheck(img, q, s), ok2 = quickCheck(img, q2, s);
+        if (!ok1 && !ok2) continue;
         const warped = warp(img, q, s);
-        const r = readAny(warped, s, key);
-        if (r) return { ...r, warped, scale: s };
+        if (ok1) { const r = readAny(warped, s, key); if (r) return { ...r, warped, scale: s }; }
+        if (ok2) { const w2 = rotate180(warped); const r = readAny(w2, s, key); if (r) return { ...r, warped: w2, scale: s }; }
       }
     }
     return null;
@@ -529,7 +620,7 @@
 
   const MAXP = maxPayload("tile");
   const STYLES = Object.fromEntries(Object.entries(LAYOUTS).map(([k, L]) => [k, { name: L.name, maxPayload: maxPayload(k) }]));
-  const api = { W, H, PAL, MAXP, STYLES, maxPayload, encode, toRGBA, decode, byteLength, sha256, SYMBOLS, N_WINDOWS };
+  const api = { W, H, PAL, MAXP, STYLES, maxPayload, encode, toRGBA, decode, byteLength, sha256, SYMBOLS, BW_SYMBOLS, N_WINDOWS };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.TileCipher = api;
 })(typeof window !== "undefined" ? window : globalThis);

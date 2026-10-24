@@ -25,6 +25,13 @@ jobs:
           node-version: "22"
       - name: 暗号の作成と読み取りが正しく往復するか確かめる
         run: node --test tests/core.test.js
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: アプリと Python 版が同じ形式か確かめる
+        run: |
+          pip install pillow numpy opencv-python-headless
+          python3 tests/parity_test.py
 
   deploy:
     needs: test

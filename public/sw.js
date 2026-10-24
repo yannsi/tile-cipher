@@ -1,6 +1,6 @@
 // オフラインでも開けるよう、アプリのファイルを端末に保存しておく
 // アプリを更新したら CACHE の番号を上げる（v1 → v2）と、新しいファイルに入れ替わる
-const CACHE = "tile-cipher-v2";
+const CACHE = "tile-cipher-v3";
 const APP_FILES = [
   "./", "index.html", "app.js", "core.js", "worker.js", "encoding.min.js", "manifest.webmanifest",
   "icons/icon-192.png", "icons/icon-512.png", "icons/apple-touch-icon.png", "icons/favicon-64.png",

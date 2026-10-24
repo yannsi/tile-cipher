@@ -6,4 +6,5 @@
 - 説明や画面の文言はすべて日本語。日本語フォントは BIZ UDPゴシック
 - 形式は `public/core.js` と `tools/tile_cipher.py` で同じに保つ。どちらかを変えたら両方直し、相互に読めるか確かめる
 - アプリを変えたら `public/sw.js` の `CACHE` の番号と `public/app.js` の `VERSION` を上げる
-- 公開前に `node --test tests/core.test.js` を通す
+- 公開前に `node --test tests/core.test.js` と `python3 tests/parity_test.py` を通す
+- 絵の種類は4つ: tile / night / tile-bw / night-bw（core.js の LAYOUTS と tile_cipher.py の read_any）

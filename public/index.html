@@ -67,12 +67,16 @@ h1 .dot { color: var(--red); }
 .styles label:focus-within { outline: 3px solid var(--yellow); outline-offset: 2px; }
 .styles .sw { width: 22px; height: 16px; border-radius: 3px; flex: none; }
 .sw.tile { background: conic-gradient(var(--red) 0 25%, var(--yellow) 0 50%, #000 0 75%, #fff 0); outline: 1px solid var(--line); }
-.sw.night { background: linear-gradient(#000 0 45%, #000 0) ; position: relative; outline: 1px solid var(--line); }
+.sw.night { background: #000; position: relative; outline: 1px solid var(--line); }
+.sw.c4 { background: linear-gradient(90deg, #000 0 25%, #fff 0 50%, #f00 0 75%, #ff0 0); outline: 1px solid var(--line); }
+.sw.bw { background: linear-gradient(90deg, #000 0 50%, #fff 0); outline: 1px solid var(--line); }
 .sw.night::after { content: ""; position: absolute; left: 5px; top: 6px; width: 3px; height: 3px; background: var(--yellow); box-shadow: 6px 0 0 #fff, 0 5px 0 #f00, 6px 5px 0 var(--yellow), 12px 3px 0 #fff; }
 button:focus-visible, input:focus-visible, textarea:focus-visible, .filebtn:focus-within { outline: 3px solid var(--yellow); outline-offset: 2px; }
 
 .device { background: var(--bezel); border: 1px solid var(--line); border-radius: 14px; padding: 18px 18px 26px; position: relative; }
-.device::after { content: "EZ Sign 4.2″ · 400×300 · 4色"; position: absolute; left: 0; right: 0; bottom: 6px; text-align: center; font-size: 0.68rem; letter-spacing: 0.08em; color: var(--muted); }
+.device::after { content: "EZ Sign 4.2″ · 400×300 · 4色"; }
+.device.is-bw::after { content: "EZ Sign 4.2″ · 400×300 · 白黒"; }
+.device::after { position: absolute; left: 0; right: 0; bottom: 6px; text-align: center; font-size: 0.68rem; letter-spacing: 0.08em; color: var(--muted); }
 .device img, .device canvas { display: block; width: 100%; max-width: 100%; aspect-ratio: 4 / 3; image-rendering: pixelated; background: #fff; border-radius: 2px; }
 .device.nolabel::after { content: none; }
 .device.nolabel { padding: 10px; }
@@ -127,7 +131,7 @@ details p { font-size: 0.88rem; color: var(--muted); margin: 8px 0 0; max-width:
 <div class="wrap">
   <header>
     <h1>タイル暗号<span class="dot">.</span></h1>
-    <span class="ver" id="ver">v1.1</span>
+    <span class="ver" id="ver">v1.2</span>
   </header>
 
   <!-- ホーム画面に追加の案内（アプリとして開いているときは出さない） -->
@@ -147,12 +151,19 @@ details p { font-size: 0.88rem; color: var(--muted); margin: 8px 0 0; max-width:
 
   <!-- 作る -->
   <section id="panel-make" class="panel" role="tabpanel" aria-labelledby="tab-make">
-    <div class="device"><img id="code-img" alt="暗号画像のプレビュー"></div>
+    <div class="device" id="make-device"><img id="code-img" alt="暗号画像のプレビュー"></div>
     <div class="field">
       <span class="label">絵の種類</span>
       <div class="styles" role="radiogroup" aria-label="絵の種類">
         <label><input type="radio" name="style" id="style-tile" value="tile" checked><span class="sw tile"></span>図形タイル</label>
         <label><input type="radio" name="style" id="style-night" value="night"><span class="sw night"></span>夜景</label>
+      </div>
+    </div>
+    <div class="field">
+      <span class="label">色 <span class="hint">（持っている電子ペーパーに合わせる）</span></span>
+      <div class="styles" role="radiogroup" aria-label="色">
+        <label><input type="radio" name="color" id="color-4" value="4" checked><span class="sw c4"></span>4色</label>
+        <label><input type="radio" name="color" id="color-bw" value="bw"><span class="sw bw"></span>白黒</label>
       </div>
     </div>
     <div class="field">
@@ -202,7 +213,7 @@ details p { font-size: 0.88rem; color: var(--muted); margin: 8px 0 0; max-width:
     <button class="btn ghost" id="try-current">いま作った画像で試す</button>
     <details>
       <summary>しくみ</summary>
-      <p>48マスそれぞれが「背景の色・図形の色・図形の形」の組み合わせで64通りあり、1マスで6ビットを運びます。合計36バイトのうち、先頭が長さ、末尾2バイトが読み間違いを見つけるためのチェック用です。中身は合言葉から作った乱数で混ぜてあるので、同じ言葉でも合言葉が違えば別の柄になります。夜景の絵では、107個の窓の明かり（消灯・白・赤・黄）が1つにつき2ビットを運び、23バイトまで入ります。写真は黒い枠で位置を見つけてまっすぐに直し、下の赤と黄の四角で向きと色合いを合わせてから、どちらの絵かも自動で見分けて読みます。遊び用の仕組みで、本格的な暗号の強さはありません。</p>
+      <p>48マスそれぞれが「背景の色・図形の色・図形の形」の組み合わせで64通りあり、1マスで6ビットを運びます。合計36バイトのうち、先頭が長さ、末尾2バイトが読み間違いを見つけるためのチェック用です。中身は合言葉から作った乱数で混ぜてあるので、同じ言葉でも合言葉が違えば別の柄になります。夜景の絵では、107個の窓の明かり（消灯・白・赤・黄）が1つにつき2ビットを運び、23バイトまで入ります。白黒にすると、図形タイルは向き違いの図形を足した32通り（1マス5ビット、27バイトまで）、夜景は窓が「消灯・全部点灯・左半分・右半分」の4通りになります。写真は黒い枠で位置を見つけてまっすぐに直し、下の赤と黄の四角で向きと色合いを合わせてから、どちらの絵かも自動で見分けて読みます。遊び用の仕組みで、本格的な暗号の強さはありません。</p>
     </details>
   </section>
 </div>

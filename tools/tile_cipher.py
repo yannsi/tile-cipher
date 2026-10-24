@@ -2,7 +2,7 @@
 """タイル暗号 v2 — 文字を4色の図形タイル（8x6=48マス）に変換し、画像や写真から元に戻す。
 
   書き込み:  python3 tile_cipher.py encode "メッセージ" -o secret.png [-k 合言葉] [--style night]
-             （--style night で夜景の絵。省略すると図形タイル）
+             （--style night で夜景、tile-bw / night-bw で白黒版。省略すると図形タイル）
   読み取り:  python3 tile_cipher.py decode secret.png [-k 合言葉]
              （電子ペーパーをスマホで撮った写真もそのまま渡せます）
 
@@ -143,6 +143,7 @@ def _night_windows():
 N_WINDOWS = _night_windows()
 N_CAP = len(N_WINDOWS) * 2 // 8
 N_PREFIX = b"tile-cipher-night"
+N_PREFIX_BW = b"tile-cipher-night-bw"
 
 
 def _lcg(seed):
@@ -154,8 +155,10 @@ def _lcg(seed):
     return nxt
 
 
-def render_night(states):
-    """アプリ（core.js）とまったく同じ絵を、色番号(0-3)の配列として描く"""
+def render_night(states, bw=False):
+    """アプリ（core.js）とまったく同じ絵を、色番号(0-3)の配列として描く。
+    bw=True は白黒版: 月・灯り・道の線を白に。窓は 0消灯 1全部点灯 2左半分 3右半分（カーテン）"""
+    Y_, R_ = (1, 1) if bw else (3, 2)
     idx = np.ones((H, W), dtype=np.uint8)
 
     def rect(x0, y0, x1, y1, c):
@@ -180,7 +183,7 @@ def render_night(states):
         x = N_SCENE[0] + 4 + int(rnd() * (N_SCENE[2] - N_SCENE[0] - 8))
         y = N_SCENE[1] + 4 + int(rnd() * (150 - N_SCENE[1] - 4))
         big = rnd() < 0.2
-        if any(bx - 4 <= x <= bx + bw + 4 and y >= top - 6 for bx, bw, top in N_BUILDINGS):
+        if any(bx - 4 <= x <= bx + bwid + 4 and y >= top - 6 for bx, bwid, top in N_BUILDINGS):
             continue
         if math.hypot(x - 62, y - 54) < 26:
             continue
@@ -189,29 +192,49 @@ def render_night(states):
                 setp(x + dd, y, 1); setp(x, y + dd, 1)
         else:
             setp(x, y, 1)
-    ell(44, 36, 80, 72, 3); ell(54, 30, 90, 66, 0)
-    for bx, bw, top in N_BUILDINGS:
-        rect(bx, top, bx + bw, N_GROUND, 1); rect(bx + 1, top + 1, bx + bw - 1, N_GROUND - 1, 0)
-    rect(240, 38, 240, 56, 1); ell(237, 34, 243, 40, 2)
-    rect(110, 58, 110, 70, 1); ell(108, 55, 112, 59, 2)
+    ell(44, 36, 80, 72, Y_); ell(54, 30, 90, 66, 0)
+    for bx, bwid, top in N_BUILDINGS:
+        rect(bx, top, bx + bwid, N_GROUND, 1); rect(bx + 1, top + 1, bx + bwid - 1, N_GROUND - 1, 0)
+    rect(240, 38, 240, 56, 1); ell(237, 34, 243, 40, R_)
+    rect(110, 58, 110, 70, 1); ell(108, 55, 112, 59, R_)
     rect(N_SCENE[0], N_GROUND, N_SCENE[2], N_GROUND, 1)
     for x in range(40, 370, 46):
         rect(x, N_GROUND + 1, x, N_GROUND + 6, 1)
     for x in range(30, 375, 20):
-        rect(x, N_GROUND + 7, x + 8, N_GROUND + 7, 3)
+        rect(x, N_GROUND + 7, x + 8, N_GROUND + 7, Y_)
     for (x, y), st in zip(N_WINDOWS, states):
-        if st:
+        if not st:
+            continue
+        if not bw:
             rect(x, y, x + N_WIN - 1, y + N_WIN - 1, st)
-    rect(*N_PATCH_R, 2); rect(*N_PATCH_Y, 3)
+        elif st == 1:
+            rect(x, y, x + N_WIN - 1, y + N_WIN - 1, 1)
+        elif st == 2:
+            rect(x, y, x + 4, y + N_WIN - 1, 1)
+        else:
+            rect(x + 5, y, x + N_WIN - 1, y + N_WIN - 1, 1)
+    if not bw:
+        rect(*N_PATCH_R, 2); rect(*N_PATCH_Y, 3)
     return idx
 
 
-def encode_night(text, key):
-    data = pack(text, key, N_CAP, N_PREFIX)
-    bits = "".join(f"{b_:08b}" for b_ in data).ljust(2 * len(N_WINDOWS), "0")
-    states = [int(bits[i:i + 2], 2) for i in range(0, 2 * len(N_WINDOWS), 2)]
-    idx = render_night(states)
+def _to_vals(data, bits_per, count):
+    bits = "".join(f"{b_:08b}" for b_ in data).ljust(bits_per * count, "0")
+    return [int(bits[i * bits_per:(i + 1) * bits_per], 2) for i in range(count)]
+
+
+def _from_vals(vals, bits_per, cap):
+    bits = "".join(f"{v:0{bits_per}b}" for v in vals)
+    return bytes(int(bits[i:i + 8], 2) for i in range(0, cap * 8, 8))
+
+
+def _to_image(idx):
     return Image.fromarray(np.array(COLORS, dtype=np.uint8)[idx])
+
+
+def encode_night(text, key, bw=False):
+    prefix = N_PREFIX_BW if bw else N_PREFIX
+    return _to_image(render_night(_to_vals(pack(text, key, N_CAP, prefix), 2, len(N_WINDOWS)), bw))
 
 
 def read_night(arr, s, palette):
@@ -222,6 +245,116 @@ def read_night(arr, s, palette):
         states.append(int(((pal - m) ** 2).sum(axis=1).argmin()))
     bits = "".join(f"{v:02b}" for v in states)
     return bytes(int(bits[i:i + 8], 2) for i in range(0, N_CAP * 8, 8))
+
+
+def read_night_bw(arr, s, palette):
+    pal = np.array(palette)
+
+    def half(x0, x1, y0, y1):
+        m = arr[int(y0 * s):int(y1 * s), int(x0 * s):int(x1 * s)].reshape(-1, 3).mean(axis=0)
+        return int(((pal - m) ** 2).sum(axis=1).argmin())
+
+    states = []
+    for x, y in N_WINDOWS:
+        l, r = half(x + 1, x + 4, y + 2, y + N_WIN - 2), half(x + 6, x + 9, y + 2, y + N_WIN - 2)
+        states.append(1 if l and r else 2 if l else 3 if r else 0)
+    return _from_vals(states, 2, N_CAP)
+
+
+# ================= 白黒の図形タイル（1マス5ビット、32種類） =================
+BW_SYMBOLS = [(0,1,"circle",0),(1,0,"circle",0),(1,0,"half",0),(0,1,"checker",0),(0,1,"stripes",0),(0,1,"half",0),(1,0,"checker",0),(0,1,"half",3),
+              (0,1,"dots",0),(1,0,"stripes",0),(1,0,"stripes",1),(1,0,"dots",0),(0,1,"stripes",1),(1,0,"half",3),(0,1,"ring",0),(1,0,"ring",0),
+              (1,0,"quarter",0),(0,1,"quarter",0),(0,1,"bar",0),(0,1,"bar",1),(1,0,"bar",0),(1,0,"bar",1),(1,0,"quarter",1),(1,0,"quarter",2),
+              (1,0,"quarter",3),(0,1,"quarter",1),(0,1,"quarter",2),(0,1,"quarter",3),(0,1,"square",0),(1,0,"square",0),(0,1,"triangle",0),(0,1,"triangle",1)]
+BW_CAP = COLS * ROWS * 5 // 8
+BW_GY = 24
+BW_PREFIX = b"tile-cipher-bw"
+
+
+def _in_ell(px, py, x0, y0, x1, y1):
+    cx, cy, rx, ry = (x0 + x1) / 2, (y0 + y1) / 2, (x1 - x0) / 2, (y1 - y0) / 2
+    return ((px - cx) / rx) ** 2 + ((py - cy) / ry) ** 2 <= 1
+
+
+def shape_hit(sh, px, py, t, r=0):
+    """core.js の shapeHit と同じ判定（px, py は numpy 配列でもよい）"""
+    for _ in range(r):
+        px, py = py, t - px
+    u = t / 50
+    if sh == "circle":
+        return _in_ell(px, py, 9 * u, 9 * u, t - 10 * u, t - 10 * u)
+    if sh == "quarter":
+        return _in_ell(px, py, -t, -t, t - 4 * u, t - 4 * u)
+    if sh == "half":
+        y0, y1 = t / 2 - 2 * u, t * 1.5 - 3 * u
+        return (py <= (y0 + y1) / 2) & _in_ell(px, py, 2 * u, y0, t - 3 * u, y1)
+    if sh == "triangle":
+        return px + py >= t
+    if sh == "stripes":
+        return (px >= 4 * u) & (np.mod(px - 4 * u, 14 * u) <= 6 * u + 0.5 * t / T)
+    if sh == "dots":
+        hit = np.zeros(np.shape(px), dtype=bool)
+        for cx in (14 * u, 36 * u):
+            for cy in (14 * u, 36 * u):
+                hit |= (px - cx) ** 2 + (py - cy) ** 2 <= 49 * u * u
+        return hit
+    if sh == "ring":
+        return _in_ell(px, py, 6 * u, 6 * u, t - 6 * u, t - 6 * u) & ~_in_ell(px, py, 17 * u, 17 * u, t - 17 * u, t - 17 * u)
+    if sh == "square":
+        return (px >= 15 * u) & (px <= t - 15 * u) & (py >= 15 * u) & (py <= t - 15 * u)
+    if sh == "checker":
+        return (px < t / 2) == (py < t / 2)
+    if sh == "bar":
+        return (py >= 18 * u) & (py <= t - 18 * u)
+    raise ValueError(sh)
+
+
+def render_tile_bw(vals):
+    """core.js の renderTile（白黒・余白を上下に広げた版）と同じ絵を色番号で描く"""
+    idx = np.ones((H, W), dtype=np.uint8)
+    b = BORDER
+    idx[b[1]:b[1] + BORDER_W, b[0]:b[2] + 1] = 0; idx[b[3] - BORDER_W + 1:b[3] + 1, b[0]:b[2] + 1] = 0
+    idx[b[1]:b[3] + 1, b[0]:b[0] + BORDER_W] = 0; idx[b[1]:b[3] + 1, b[2] - BORDER_W + 1:b[2] + 1] = 0
+    ly, lx = np.mgrid[0:T, 0:T] + 0.5
+    for i, v in enumerate(vals):
+        bg, fg, sh, r = BW_SYMBOLS[v]
+        tile = np.where(shape_hit(sh, lx, ly, T, r), fg, bg).astype(np.uint8)
+        tile[0, :] = tile[-1, :] = tile[:, 0] = tile[:, -1] = 0
+        x0, y0 = GX + (i % COLS) * T, BW_GY + (i // COLS) * T
+        idx[y0:y0 + T, x0:x0 + T] = tile
+    gw, gh = COLS * T, ROWS * T
+    idx[BW_GY - 1:BW_GY + gh + 1, GX - 1] = 0; idx[BW_GY - 1:BW_GY + gh + 1, GX + gw] = 0
+    idx[BW_GY - 1, GX - 1:GX + gw + 1] = 0; idx[BW_GY + gh, GX - 1:GX + gw + 1] = 0
+    return idx
+
+
+def _bw_templates():
+    inner, SS, out = T - 2 * INSET, 6, []
+    g = (np.arange(GRID_N)[:, None] + (np.arange(SS)[None, :] + 0.5) / SS).reshape(-1) * inner / GRID_N + INSET
+    px, py = np.meshgrid(g, g)
+    for bg, fg, sh, r in BW_SYMBOLS:
+        c = np.where(shape_hit(sh, px, py, T, r), fg, bg).astype(float)
+        mean = c.reshape(GRID_N, SS, GRID_N, SS).mean(axis=(1, 3))
+        out.append((mean > 0.5).astype(int))   # ちょうど半分は黒（core.js と同じ）
+    return np.stack(out)
+
+
+BW_TEMPLATE_LABELS = _bw_templates()
+
+
+def encode_tile_bw(text, key):
+    return _to_image(render_tile_bw(_to_vals(pack(text, key, BW_CAP, BW_PREFIX), 5, COLS * ROWS)))
+
+
+def read_tile_bw(arr, s, palette):
+    vals = []
+    for i in range(COLS * ROWS):
+        x0 = (GX + (i % COLS) * T + INSET) * s
+        y0 = (BW_GY + (i // COLS) * T + INSET) * s
+        sz = (T - 2 * INSET) * s
+        labels = classify(cell_means(arr[int(y0):int(y0 + sz), int(x0):int(x0 + sz)]), palette)
+        vals.append(int((BW_TEMPLATE_LABELS != labels[None]).sum(axis=(1, 2)).argmin()))
+    return _from_vals(vals, 5, BW_CAP)
 
 
 def encode(text, key):
@@ -313,9 +446,18 @@ def read_any(arr, s, key):
         med((N_PATCH_R[0] + 3, N_PATCH_R[1] + 2, N_PATCH_R[2] - 3, N_PATCH_R[3] - 2)),
         med((N_PATCH_Y[0] + 3, N_PATCH_Y[1] + 2, N_PATCH_Y[2] - 3, N_PATCH_Y[3] - 2)),
     ])
-    if min(np.linalg.norm(pal[a] - pal[b]) for a in range(4) for b in range(a + 1, 4)) < 40:
-        return None
-    return unpack(read_night(arr, s, pal), key, N_CAP, N_PREFIX)
+    if min(np.linalg.norm(pal[a] - pal[b]) for a in range(4) for b in range(a + 1, 4)) >= 40:
+        if (text := unpack(read_night(arr, s, pal), key, N_CAP, N_PREFIX)) is not None:
+            return text
+    black = med((40, BORDER[1] + 1, 360, BORDER[1] + BORDER_W - 1))
+    for white_box, reader, cap, prefix in (((14, 40, 28, 260), read_tile_bw, BW_CAP, BW_PREFIX),
+                                           ((140, 266, 360, 284), read_night_bw, N_CAP, N_PREFIX_BW)):
+        pal2 = np.array([black, med(white_box)])
+        if np.linalg.norm(pal2[0] - pal2[1]) < 60:
+            continue
+        if (text := unpack(reader(arr, s, pal2), key, cap, prefix)) is not None:
+            return text
+    return None
 
 
 def order_corners(pts):
@@ -384,13 +526,16 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     e = sub.add_parser("encode", help="文字から暗号画像を作る")
     e.add_argument("text"); e.add_argument("-o", "--out", default="secret.png"); e.add_argument("-k", "--key", default="")
-    e.add_argument("--style", choices=["tile", "night"], default="tile", help="tile=図形タイル（既定）, night=夜景")
+    e.add_argument("--style", choices=["tile", "night", "tile-bw", "night-bw"], default="tile",
+                   help="tile=図形タイル（既定）, night=夜景, tile-bw / night-bw=それぞれの白黒版")
     dd = sub.add_parser("decode", help="画像や写真から文字に戻す")
     dd.add_argument("image"); dd.add_argument("-k", "--key", default="")
     dd.add_argument("--debug", help="補正後の画像をこのファイル名で保存する")
     a = ap.parse_args()
     if a.cmd == "encode":
-        (encode_night if a.style == "night" else encode)(a.text, a.key).save(a.out)
+        enc = {"tile": encode, "night": encode_night, "tile-bw": encode_tile_bw,
+               "night-bw": lambda t, k: encode_night(t, k, bw=True)}[a.style]
+        enc(a.text, a.key).save(a.out)
         print(f"保存しました: {a.out}")
     else:
         from PIL import ImageOps
