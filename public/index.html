@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>タイル暗号</title>
+<meta name="description" content="言葉を4色の図形タイルに隠して電子ペーパーに表示し、カメラで読み取るアプリ">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/favicon-64.png" type="image/png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="タイル暗号">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#e4e4de" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#141416" media="(prefers-color-scheme: dark)">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=BIZ+UDPGothic:wght@400;700&family=DotGothic16&display=swap">
+<style>
+/* レイアウト: 1カラムの道具。上に電子ペーパー本体を模したプレビュー、下に操作。作る／読むを切り替える */
+:root {
+  --paper: #e4e4de;
+  --surface: #f2f2ee;
+  --ink: #1b1b1e;
+  --muted: #5b5b60;
+  --line: #c7c7bf;
+  --red: #c4262c;
+  --yellow: #ddb020;
+  --bezel: #fbfbf9;
+  --font-display: "DotGothic16", "BIZ UDPGothic", "Hiragino Sans", "Yu Gothic", sans-serif;
+  --font-body: "BIZ UDPGothic", "Hiragino Sans", "Yu Gothic", "Meiryo", sans-serif;
+  --radius: 10px;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #141416; --surface: #1d1d20; --ink: #e8e7e2; --muted: #a3a2a0; --line: #34343a;
+    --red: #ef5d5d; --yellow: #efc43b; --bezel: #2a2a2e; color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--paper); color: var(--ink);
+  font-family: var(--font-body); font-size: 16px; line-height: 1.7;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-top: calc(env(safe-area-inset-top, 0px) + 16px);
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 40px);
+  -webkit-tap-highlight-color: transparent;
+}
+[hidden] { display: none !important; }
+.wrap { max-width: 560px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
+header { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; }
+h1 { font-family: var(--font-display); font-weight: 400; font-size: 2rem; line-height: 1.2; margin: 0; letter-spacing: 0.04em; }
+h1 .dot { color: var(--red); }
+.ver { font-size: 0.75rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.tabs { display: grid; grid-template-columns: 1fr 1fr; background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 4px; gap: 4px; }
+.tabs button { font: inherit; font-weight: 700; font-size: 1rem; border: 0; border-radius: 999px; padding: 10px 0; background: transparent; color: var(--muted); cursor: pointer; }
+.tabs button[aria-selected="true"] { background: var(--ink); color: var(--paper); }
+button:focus-visible, input:focus-visible, textarea:focus-visible, .filebtn:focus-within { outline: 3px solid var(--yellow); outline-offset: 2px; }
+
+.device { background: var(--bezel); border: 1px solid var(--line); border-radius: 14px; padding: 18px 18px 26px; position: relative; }
+.device::after { content: "EZ Sign 4.2″ · 400×300 · 4色"; position: absolute; left: 0; right: 0; bottom: 6px; text-align: center; font-size: 0.68rem; letter-spacing: 0.08em; color: var(--muted); }
+.device img, .device canvas { display: block; width: 100%; max-width: 100%; aspect-ratio: 4 / 3; image-rendering: pixelated; background: #fff; border-radius: 2px; }
+.device.nolabel::after { content: none; }
+.device.nolabel { padding: 10px; }
+
+.camera { position: relative; border-radius: 12px; overflow: hidden; background: #000; aspect-ratio: 3 / 4; max-height: 70vh; width: 100%; }
+.camera video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.camera .guide { position: absolute; left: 8%; right: 8%; top: 50%; aspect-ratio: 4 / 3; transform: translateY(-50%); border: 2px dashed rgba(255,255,255,.85); border-radius: 8px; box-shadow: 0 0 0 100vmax rgba(0,0,0,.35); pointer-events: none; }
+.camera .cam-status { position: absolute; left: 0; right: 0; bottom: 0; padding: 10px 14px calc(10px + 2px); color: #fff; background: linear-gradient(transparent, rgba(0,0,0,.65)); font-size: 0.9rem; font-weight: 700; text-align: center; }
+
+.panel { display: flex; flex-direction: column; gap: 16px; }
+.field { display: flex; flex-direction: column; gap: 6px; }
+label, .label { font-weight: 700; font-size: 0.9rem; }
+.hint { font-size: 0.82rem; color: var(--muted); font-weight: 400; }
+textarea, input[type="text"] { font: inherit; font-size: 1.05rem; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; width: 100%; }
+textarea { resize: vertical; min-height: 3.2em; }
+.meter { display: flex; align-items: center; gap: 10px; font-size: 0.85rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.bar { flex: 1; height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
+.bar > i { display: block; height: 100%; background: var(--ink); width: 0; transition: width .15s; }
+.meter.over { color: var(--red); }
+.meter.over .bar > i { background: var(--red); }
+
+.actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.actions.one { grid-template-columns: 1fr; }
+.btn, .filebtn { font: inherit; font-weight: 700; font-size: 1rem; border-radius: var(--radius); padding: 13px 14px; cursor: pointer; border: 1px solid var(--ink); background: var(--ink); color: var(--paper); text-align: center; display: block; }
+.btn.ghost, .filebtn.ghost { background: transparent; color: var(--ink); }
+.btn.big { padding: 18px; font-size: 1.1rem; }
+.btn:disabled { opacity: .45; cursor: default; }
+.filebtn { position: relative; }
+.filebtn input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+.note { font-size: 0.85rem; color: var(--muted); margin: 0; }
+
+.result { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; display: flex; flex-direction: column; gap: 6px; }
+.result .msg { font-size: 1.35rem; font-weight: 700; word-break: break-all; }
+.status { display: inline-flex; align-items: center; gap: 8px; font-size: 0.85rem; font-weight: 700; }
+.status::before { content: ""; width: 10px; height: 10px; border-radius: 2px; background: var(--muted); }
+.status.ok::before { background: var(--yellow); outline: 1px solid var(--ink); }
+.status.ng::before { background: var(--red); }
+
+.install { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; font-size: 0.9rem; }
+.install strong { font-size: 0.95rem; }
+.install .row { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.install button.close { font: inherit; background: none; border: 0; color: var(--muted); text-decoration: underline; cursor: pointer; padding: 4px; }
+
+.tips { margin: 0; padding-left: 1.2em; font-size: 0.88rem; color: var(--muted); display: flex; flex-direction: column; gap: 2px; }
+details { border-top: 1px solid var(--line); padding-top: 12px; }
+summary { cursor: pointer; font-weight: 700; font-size: 0.92rem; }
+details p { font-size: 0.88rem; color: var(--muted); margin: 8px 0 0; max-width: 65ch; }
+@media (prefers-reduced-motion: reduce) { .bar > i { transition: none; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>タイル暗号<span class="dot">.</span></h1>
+    <span class="ver" id="ver">v1.0</span>
+  </header>
+
+  <!-- ホーム画面に追加の案内（アプリとして開いているときは出さない） -->
+  <div class="install" id="install" hidden>
+    <strong>ホーム画面に追加すると、アプリとして使えます</strong>
+    <span id="install-text"></span>
+    <div class="row">
+      <button class="btn" id="install-btn" hidden>ホーム画面に追加</button>
+      <button class="close" id="install-close">閉じる</button>
+    </div>
+  </div>
+
+  <div class="tabs" role="tablist">
+    <button id="tab-make" role="tab" aria-selected="true" aria-controls="panel-make">作る</button>
+    <button id="tab-read" role="tab" aria-selected="false" aria-controls="panel-read">読む</button>
+  </div>
+
+  <!-- 作る -->
+  <section id="panel-make" class="panel" role="tabpanel" aria-labelledby="tab-make">
+    <div class="device"><img id="code-img" alt="暗号タイルのプレビュー"></div>
+    <div class="field">
+      <label for="msg">隠す言葉</label>
+      <textarea id="msg" rows="2">今日もおつかれさま</textarea>
+      <div class="meter" id="meter"><div class="bar"><i id="meter-bar"></i></div><span id="meter-text">0 / 33 バイト</span></div>
+      <span class="hint">日本語はだいたい1文字2バイト。16文字前後まで入ります。</span>
+    </div>
+    <div class="field">
+      <label for="key-make">合言葉 <span class="hint">（なしでもOK）</span></label>
+      <input id="key-make" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="例：くつした">
+    </div>
+    <div class="actions one"><button class="btn big" id="share">画像を保存する</button></div>
+    <p class="note" id="share-note">保存した画像をEZ Signのアプリで選び、スマホを電子ペーパーにかざします（4色版は25秒ほど）。</p>
+  </section>
+
+  <!-- 読む -->
+  <section id="panel-read" class="panel" role="tabpanel" aria-labelledby="tab-read" hidden>
+    <div class="field">
+      <label for="key-read">合言葉 <span class="hint">（作ったときと同じもの）</span></label>
+      <input id="key-read" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="なしで作ったなら空のまま">
+    </div>
+
+    <div class="camera" id="camera" hidden>
+      <video id="video" playsinline muted autoplay></video>
+      <div class="guide"></div>
+      <div class="cam-status" id="cam-status">電子ペーパーを点線の枠に合わせてください</div>
+    </div>
+
+    <div class="actions">
+      <button class="btn" id="cam-start">カメラで読む</button>
+      <label class="filebtn ghost" for="photo">写真から読む<input id="photo" type="file" accept="image/*"></label>
+    </div>
+    <div class="actions one"><button class="btn ghost" id="cam-stop" hidden>カメラを止める</button></div>
+
+    <div class="result" id="result" hidden>
+      <span class="status" id="status"></span>
+      <div class="msg" id="decoded"></div>
+    </div>
+    <div class="device nolabel" id="warped-wrap" hidden><canvas id="warped" width="800" height="600" aria-label="まっすぐに補正した画像"></canvas></div>
+
+    <ul class="tips">
+      <li>黒い枠が全部写るように撮る</li>
+      <li>なるべく正面から。多少ななめでも補正します</li>
+      <li>照明の映り込みが強いときは角度を少し変える</li>
+    </ul>
+    <button class="btn ghost" id="try-current">いま作った画像で試す</button>
+    <details>
+      <summary>しくみ</summary>
+      <p>48マスそれぞれが「背景の色・図形の色・図形の形」の組み合わせで64通りあり、1マスで6ビットを運びます。合計36バイトのうち、先頭が長さ、末尾2バイトが読み間違いを見つけるためのチェック用です。中身は合言葉から作った乱数で混ぜてあるので、同じ言葉でも合言葉が違えば別の柄になります。写真は黒い枠で位置を見つけてまっすぐに直し、下の赤と黄の四角で向きと色合いを合わせてから読みます。遊び用の仕組みで、本格的な暗号の強さはありません。</p>
+    </details>
+  </section>
+</div>
+
+<script src="encoding.min.js"></script>
+<script src="core.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,441 @@
+// タイル暗号 v2 — 計算部分（DOMを使わない純粋な関数だけ。ブラウザとNodeの両方で動く）
+(function (root) {
+  "use strict";
+  const W = 400, H = 300, COLS = 8, ROWS = 6, T = 42, GX = 32, GY = 16;
+  const BORDER = [4, 4, 395, 295], BW = 7;
+  const PATCH_R = [32, 274, 80, 284], PATCH_Y = [88, 274, 136, 284];
+  const PAL = [[0, 0, 0], [255, 255, 255], [255, 0, 0], [255, 255, 0]];
+  const SHAPES = ["circle", "quarter", "half", "triangle", "stripes", "dots"];
+  const CAP = 36, CHECK = 2, MAXP = 33, INSET = 5, GN = 12;
+
+  const SYMBOLS = [];
+  for (const sh of SHAPES) for (let bg = 0; bg < 4; bg++) for (let fg = 0; fg < 4; fg++) if (fg !== bg) SYMBOLS.push([bg, fg, sh]);
+  SYMBOLS.length = 64;
+
+  // ---------- SHA-256 ----------
+  const K256 = new Uint32Array([
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2]);
+  function sha256(msg) {
+    const len = msg.length, bitLen = len * 8;
+    const padLen = ((len + 9 + 63) >> 6) << 6;
+    const buf = new Uint8Array(padLen);
+    buf.set(msg); buf[len] = 0x80;
+    const dv = new DataView(buf.buffer);
+    dv.setUint32(padLen - 4, bitLen >>> 0); dv.setUint32(padLen - 8, Math.floor(bitLen / 2 ** 32));
+    const h = new Uint32Array([0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]);
+    const w = new Uint32Array(64);
+    const rotr = (x, n) => (x >>> n) | (x << (32 - n));
+    for (let off = 0; off < padLen; off += 64) {
+      for (let i = 0; i < 16; i++) w[i] = dv.getUint32(off + i * 4);
+      for (let i = 16; i < 64; i++) {
+        const s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >>> 3);
+        const s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >>> 10);
+        w[i] = (w[i - 16] + s0 + w[i - 7] + s1) >>> 0;
+      }
+      let [a, b, c, d, e, f, g, hh] = h;
+      for (let i = 0; i < 64; i++) {
+        const S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+        const ch = (e & f) ^ (~e & g);
+        const t1 = (hh + S1 + ch + K256[i] + w[i]) >>> 0;
+        const S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+        const mj = (a & b) ^ (a & c) ^ (b & c);
+        const t2 = (S0 + mj) >>> 0;
+        hh = g; g = f; f = e; e = (d + t1) >>> 0; d = c; c = b; b = a; a = (t1 + t2) >>> 0;
+      }
+      h[0] += a; h[1] += b; h[2] += c; h[3] += d; h[4] += e; h[5] += f; h[6] += g; h[7] += hh;
+    }
+    const out = new Uint8Array(32);
+    const odv = new DataView(out.buffer);
+    for (let i = 0; i < 8; i++) odv.setUint32(i * 4, h[i]);
+    return out;
+  }
+
+  const utf8 = (s) => new TextEncoder().encode(s);
+  function concat(...arrs) {
+    const n = arrs.reduce((a, b) => a + b.length, 0), out = new Uint8Array(n);
+    let o = 0; for (const a of arrs) { out.set(a, o); o += a.length; }
+    return out;
+  }
+  function keystream(key, n) {
+    const parts = []; let got = 0, i = 0;
+    while (got < n) { const d = sha256(utf8(`${key}:${i}`)); parts.push(d); got += d.length; i++; }
+    return concat(...parts).slice(0, n);
+  }
+  const checkBytes = (data) => sha256(concat(utf8("tile-cipher"), data)).slice(0, CHECK);
+
+  // ---------- 文字コード（Shift_JIS 優先、無理なら UTF-8） ----------
+  function encodeBody(text) {
+    const E = root.Encoding;
+    if (E) {
+      const codes = E.convert(E.stringToCode(text), { to: "SJIS", from: "UNICODE" });
+      const back = E.codeToString(E.convert(codes, { to: "UNICODE", from: "SJIS" }));
+      if (back === text) return { flag: 0, body: Uint8Array.from(codes) };
+    }
+    return { flag: 1, body: utf8(text) };
+  }
+  function decodeBody(bytes, flag) {
+    if (flag) return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    const E = root.Encoding;
+    if (E) return E.codeToString(E.convert(Array.from(bytes), { to: "UNICODE", from: "SJIS" }));
+    return new TextDecoder("shift_jis", { fatal: true }).decode(bytes);
+  }
+  function byteLength(text) { return encodeBody(text).body.length; }
+
+  function pack(text, key) {
+    const { flag, body } = encodeBody(text);
+    if (body.length > MAXP) throw new Error(`長すぎます（${body.length}バイト / 最大${MAXP}バイト）`);
+    const head = concat(Uint8Array.of(body.length | (flag << 7)), body);
+    const raw = new Uint8Array(CAP);
+    raw.set(concat(head, checkBytes(head)));
+    const ks = keystream(key, CAP);
+    return raw.map((b, i) => b ^ ks[i]);
+  }
+  function unpack(xored, key) {
+    const ks = keystream(key, CAP);
+    const raw = xored.map((b, i) => b ^ ks[i]);
+    const n = raw[0] & 0x7f, flag = raw[0] >> 7;
+    if (n > MAXP) return null;
+    const chk = checkBytes(raw.slice(0, 1 + n));
+    for (let i = 0; i < CHECK; i++) if (raw[1 + n + i] !== chk[i]) return null;
+    try { return decodeBody(raw.slice(1, 1 + n), flag); } catch (e) { return null; }
+  }
+  function toSymbols(bytes) {
+    let bits = ""; for (const b of bytes) bits += b.toString(2).padStart(8, "0");
+    const out = []; for (let i = 0; i < bits.length; i += 6) out.push(parseInt(bits.slice(i, i + 6), 2));
+    return out;
+  }
+  function fromSymbols(vals) {
+    let bits = ""; for (const v of vals) bits += v.toString(2).padStart(6, "0");
+    const out = new Uint8Array(bits.length / 8);
+    for (let i = 0; i < out.length; i++) out[i] = parseInt(bits.slice(i * 8, i * 8 + 8), 2);
+    return out;
+  }
+
+  // ---------- 図形（座標で判定するので、4色以外の色が混ざらない） ----------
+  function inEll(px, py, x0, y0, x1, y1) {
+    const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, rx = (x1 - x0) / 2, ry = (y1 - y0) / 2;
+    const dx = (px - cx) / rx, dy = (py - cy) / ry;
+    return dx * dx + dy * dy <= 1;
+  }
+  function shapeHit(sh, px, py, t) {
+    const u = t / 50;
+    switch (sh) {
+      case "circle": return inEll(px, py, 9 * u, 9 * u, t - 10 * u, t - 10 * u);
+      case "quarter": return inEll(px, py, -t, -t, t - 4 * u, t - 4 * u);
+      case "half": { const y0 = t / 2 - 2 * u, y1 = t * 1.5 - 3 * u; return py <= (y0 + y1) / 2 && inEll(px, py, 2 * u, y0, t - 3 * u, y1); }
+      case "triangle": return px + py >= t;
+      case "stripes": { if (px < 4 * u) return false; return (px - 4 * u) % (14 * u) <= 6 * u + 0.5 * t / T; }
+      case "dots": {
+        for (const cx of [14 * u, 36 * u]) for (const cy of [14 * u, 36 * u]) {
+          const dx = px - cx, dy = py - cy; if (dx * dx + dy * dy <= 49 * u * u) return true;
+        }
+        return false;
+      }
+    }
+    return false;
+  }
+  const tileColor = (sym, px, py, t) => (shapeHit(sym[2], px, py, t) ? sym[1] : sym[0]);
+
+  const inBox = (x, y, b) => x >= b[0] && x <= b[2] && y >= b[1] && y <= b[3];
+
+  // 暗号画像を色番号(0-3)の配列として描く
+  function renderCode(vals) {
+    const idx = new Uint8Array(W * H).fill(1);
+    const gw = COLS * T, gh = ROWS * T;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      let c = 1;
+      if (inBox(x, y, BORDER) && (x < BORDER[0] + BW || x > BORDER[2] - BW || y < BORDER[1] + BW || y > BORDER[3] - BW)) c = 0;
+      const lx = x - GX, ly = y - GY;
+      if (lx >= 0 && lx < gw && ly >= 0 && ly < gh) {
+        const col = Math.floor(lx / T), row = Math.floor(ly / T);
+        const sym = SYMBOLS[vals[row * COLS + col]];
+        c = tileColor(sym, lx - col * T + 0.5, ly - row * T + 0.5, T);
+        const mx = lx % T, my = ly % T;
+        if (mx === 0 || mx === T - 1 || my === 0 || my === T - 1) c = 0;
+      }
+      if ((lx === -1 || lx === gw) && ly >= -1 && ly <= gh) c = 0;
+      if ((ly === -1 || ly === gh) && lx >= -1 && lx <= gw) c = 0;
+      if (inBox(x, y, PATCH_R)) c = 2;
+      if (inBox(x, y, PATCH_Y)) c = 3;
+      idx[y * W + x] = c;
+    }
+    return idx;
+  }
+  function encode(text, key) { return renderCode(toSymbols(pack(text, key))); }
+  function toRGBA(idx) {
+    const out = new Uint8ClampedArray(idx.length * 4);
+    for (let i = 0; i < idx.length; i++) { const c = PAL[idx[i]]; out[i * 4] = c[0]; out[i * 4 + 1] = c[1]; out[i * 4 + 2] = c[2]; out[i * 4 + 3] = 255; }
+    return out;
+  }
+
+  // ---------- 読み取り ----------
+  function classify(m, pal) {
+    let best = 0, bd = Infinity;
+    for (let k = 0; k < 4; k++) {
+      const p = pal[k], d = (m[0] - p[0]) ** 2 + (m[1] - p[1]) ** 2 + (m[2] - p[2]) ** 2;
+      if (d < bd) { bd = d; best = k; }
+    }
+    return best;
+  }
+  // 見本（64種）の色ラベル。タイル内側を GN x GN に分けて、各マスの平均色で決める
+  const TEMPLATES = (() => {
+    const inner = T - 2 * INSET, SS = 6, out = [];
+    for (const sym of SYMBOLS) {
+      const lab = new Uint8Array(GN * GN);
+      for (let j = 0; j < GN; j++) for (let i = 0; i < GN; i++) {
+        const m = [0, 0, 0]; let n = 0;
+        for (let sy = 0; sy < SS; sy++) for (let sx = 0; sx < SS; sx++) {
+          const px = INSET + (i + (sx + 0.5) / SS) * inner / GN, py = INSET + (j + (sy + 0.5) / SS) * inner / GN;
+          const c = PAL[tileColor(sym, px, py, T)];
+          m[0] += c[0]; m[1] += c[1]; m[2] += c[2]; n++;
+        }
+        lab[j * GN + i] = classify([m[0] / n, m[1] / n, m[2] / n], PAL);
+      }
+      out.push(lab);
+    }
+    return out;
+  })();
+
+  // img: {w, h, data: RGB(3ch) 配列} を、400x300 の s 倍に補正済みのものとして読む
+  function readLayout(img, s) {
+    const { w, data } = img;
+    function med(box) {
+      const ch = [[], [], []];
+      for (let y = Math.floor(box[1] * s); y < Math.floor(box[3] * s); y++)
+        for (let x = Math.floor(box[0] * s); x < Math.floor(box[2] * s); x++) {
+          const o = (y * w + x) * 3; ch[0].push(data[o]); ch[1].push(data[o + 1]); ch[2].push(data[o + 2]);
+        }
+      return ch.map((a) => { a.sort((p, q) => p - q); return a[a.length >> 1]; });
+    }
+    const pal = [
+      med([40, BORDER[1] + 1, 360, BORDER[1] + BW - 1]),
+      med([14, 40, 28, 260]),
+      med([PATCH_R[0] + 3, PATCH_R[1] + 2, PATCH_R[2] - 3, PATCH_R[3] - 2]),
+      med([PATCH_Y[0] + 3, PATCH_Y[1] + 2, PATCH_Y[2] - 3, PATCH_Y[3] - 2]),
+    ];
+    let minD = Infinity;
+    for (let a = 0; a < 4; a++) for (let b = a + 1; b < 4; b++)
+      minD = Math.min(minD, Math.hypot(pal[a][0] - pal[b][0], pal[a][1] - pal[b][1], pal[a][2] - pal[b][2]));
+    if (minD < 40) return null;
+    const vals = [];
+    const size = (T - 2 * INSET) * s;
+    const lab = new Uint8Array(GN * GN);
+    for (let t = 0; t < COLS * ROWS; t++) {
+      const x0 = (GX + (t % COLS) * T + INSET) * s, y0 = (GY + Math.floor(t / COLS) * T + INSET) * s;
+      for (let j = 0; j < GN; j++) for (let i = 0; i < GN; i++) {
+        const ys = Math.floor(y0 + j * size / GN), ye = Math.floor(y0 + (j + 1) * size / GN);
+        const xs = Math.floor(x0 + i * size / GN), xe = Math.floor(x0 + (i + 1) * size / GN);
+        const m = [0, 0, 0]; let n = 0;
+        for (let y = ys; y < ye; y++) for (let x = xs; x < xe; x++) {
+          const o = (y * w + x) * 3; m[0] += data[o]; m[1] += data[o + 1]; m[2] += data[o + 2]; n++;
+        }
+        lab[j * GN + i] = classify([m[0] / n, m[1] / n, m[2] / n], pal);
+      }
+      let best = 0, bm = Infinity;
+      for (let k = 0; k < 64; k++) {
+        const tp = TEMPLATES[k]; let mm = 0;
+        for (let q = 0; q < GN * GN; q++) if (tp[q] !== lab[q]) mm++;
+        if (mm < bm) { bm = mm; best = k; }
+      }
+      vals.push(best);
+    }
+    return fromSymbols(vals);
+  }
+
+  // 4点対応の射影変換（dst座標 → 写真座標）
+  function homography(src, dst) {
+    const A = [], b = [];
+    for (let i = 0; i < 4; i++) {
+      const [x, y] = src[i], [u, v] = dst[i];
+      A.push([x, y, 1, 0, 0, 0, -u * x, -u * y]); b.push(u);
+      A.push([0, 0, 0, x, y, 1, -v * x, -v * y]); b.push(v);
+    }
+    for (let c = 0; c < 8; c++) {
+      let p = c; for (let r = c + 1; r < 8; r++) if (Math.abs(A[r][c]) > Math.abs(A[p][c])) p = r;
+      [A[c], A[p]] = [A[p], A[c]]; [b[c], b[p]] = [b[p], b[c]];
+      for (let r = 0; r < 8; r++) if (r !== c) {
+        const f = A[r][c] / A[c][c];
+        for (let k = c; k < 8; k++) A[r][k] -= f * A[c][k];
+        b[r] -= f * b[c];
+      }
+    }
+    const h = b.map((v, i) => v / A[i][i]);
+    return [...h, 1];
+  }
+  function warp(img, quad, s) {
+    const ow = W * s, oh = H * s;
+    const dstPts = [[BORDER[0], BORDER[1]], [BORDER[2] + 1, BORDER[1]], [BORDER[2] + 1, BORDER[3] + 1], [BORDER[0], BORDER[3] + 1]].map(([x, y]) => [x * s, y * s]);
+    const Hm = homography(dstPts, quad);
+    const out = new Float32Array(ow * oh * 3);
+    const { w, h, data } = img;
+    for (let y = 0; y < oh; y++) for (let x = 0; x < ow; x++) {
+      const X = x + 0.5, Y = y + 0.5;
+      const d = Hm[6] * X + Hm[7] * Y + 1;
+      let sx = (Hm[0] * X + Hm[1] * Y + Hm[2]) / d - 0.5, sy = (Hm[3] * X + Hm[4] * Y + Hm[5]) / d - 0.5;
+      if (sx < 0) sx = 0; if (sy < 0) sy = 0; if (sx > w - 1.001) sx = w - 1.001; if (sy > h - 1.001) sy = h - 1.001;
+      const x0 = sx | 0, y0 = sy | 0, fx = sx - x0, fy = sy - y0;
+      const o00 = (y0 * w + x0) * 3, o10 = o00 + 3, o01 = o00 + w * 3, o11 = o01 + 3, oo = (y * ow + x) * 3;
+      for (let k = 0; k < 3; k++)
+        out[oo + k] = (data[o00 + k] * (1 - fx) + data[o10 + k] * fx) * (1 - fy) + (data[o01 + k] * (1 - fx) + data[o11 + k] * fx) * fy;
+    }
+    return { w: ow, h: oh, data: out };
+  }
+
+  function convexHull(pts) {
+    pts.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+    const lo = [], up = [];
+    for (const p of pts) { while (lo.length >= 2 && cross(lo[lo.length - 2], lo[lo.length - 1], p) <= 0) lo.pop(); lo.push(p); }
+    for (let i = pts.length - 1; i >= 0; i--) { const p = pts[i]; while (up.length >= 2 && cross(up[up.length - 2], up[up.length - 1], p) <= 0) up.pop(); up.push(p); }
+    up.pop(); lo.pop();
+    return lo.concat(up);
+  }
+  const triArea = (a, b, c) => Math.abs((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])) / 2;
+  const quadArea = (q) => {  // 靴ひも公式（順番がねじれた四角形は小さく出る）
+    let a = 0; for (let i = 0; i < 4; i++) { const p = q[i], r = q[(i + 1) % 4]; a += p[0] * r[1] - r[0] * p[1]; }
+    return Math.abs(a) / 2;
+  };
+
+  // 凸包の頂点から、面積が最大になる4点を選ぶ（= 黒枠の四隅）
+  function maxQuad(hull) {
+    const n = hull.length;
+    if (n < 4) return null;
+    const step = Math.max(1, Math.ceil(n / 48));
+    const sub = hull.filter((_, i) => i % step === 0);
+    const m = sub.length;
+    let best = null, ba = 0;
+    for (let i = 0; i < m; i++) for (let j = i + 2; j < m; j++) {
+      let k1 = -1, a1 = 0; for (let k = i + 1; k < j; k++) { const a = triArea(sub[i], sub[j], sub[k]); if (a > a1) { a1 = a; k1 = k; } }
+      let k2 = -1, a2 = 0; for (let k = j + 1; k < i + m; k++) { const kk = k % m; const a = triArea(sub[i], sub[j], sub[kk]); if (a > a2) { a2 = a; k2 = kk; } }
+      if (k1 >= 0 && k2 >= 0 && a1 + a2 > ba) { ba = a1 + a2; best = [sub[i], sub[k1], sub[j], sub[k2]]; }
+    }
+    if (!best) return null;
+    for (let round = 0; round < 3; round++) for (let c = 0; c < 4; c++) {
+      for (const p of hull) { const q = best.slice(); q[c] = p; const a = quadArea(q); if (a > ba) { ba = a; best = q; } }
+    }
+    return { quad: best, area: ba };
+  }
+  function orderCorners(q) {
+    const cx = q.reduce((a, p) => a + p[0], 0) / 4, cy = q.reduce((a, p) => a + p[1], 0) / 4;
+    const s = q.slice().sort((a, b) => Math.atan2(a[1] - cy, a[0] - cx) - Math.atan2(b[1] - cy, b[0] - cx));
+    let st = 0; for (let i = 1; i < 4; i++) if (s[i][0] + s[i][1] < s[st][0] + s[st][1]) st = i;
+    return [0, 1, 2, 3].map((i) => s[(st + i) % 4]);
+  }
+
+  function findQuads(img) {
+    const { w, h, data } = img;
+    const gray = new Float32Array(w * h);
+    for (let i = 0; i < w * h; i++) gray[i] = 0.299 * data[i * 3] + 0.587 * data[i * 3 + 1] + 0.114 * data[i * 3 + 2];
+    const I = new Float64Array((w + 1) * (h + 1));
+    for (let y = 0; y < h; y++) { let row = 0; for (let x = 0; x < w; x++) { row += gray[y * w + x]; I[(y + 1) * (w + 1) + x + 1] = I[y * (w + 1) + x + 1] + row; } }
+    const scale = Math.max(w, h) / 1600;
+    const cands = [];
+    for (const base of [31, 61, 121]) {
+      const r = Math.max(3, Math.round(base * scale / 2));
+      const mask = new Uint8Array(w * h);
+      for (let y = 0; y < h; y++) {
+        const y0 = Math.max(0, y - r), y1 = Math.min(h, y + r + 1);
+        for (let x = 0; x < w; x++) {
+          const x0 = Math.max(0, x - r), x1 = Math.min(w, x + r + 1);
+          const sum = I[y1 * (w + 1) + x1] - I[y0 * (w + 1) + x1] - I[y1 * (w + 1) + x0] + I[y0 * (w + 1) + x0];
+          if (gray[y * w + x] < sum / ((y1 - y0) * (x1 - x0)) - 8) mask[y * w + x] = 1;
+        }
+      }
+      // 途切れをつなぐ（3x3 で太らせる）
+      const m2 = new Uint8Array(w * h);
+      for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+        const i = y * w + x;
+        if (mask[i] || mask[i - 1] || mask[i + 1] || mask[i - w] || mask[i + w] || mask[i - w - 1] || mask[i - w + 1] || mask[i + w - 1] || mask[i + w + 1]) m2[i] = 1;
+      }
+      // つながった黒い部分ごとに、各行の左端・右端を集める
+      const label = new Int32Array(w * h);
+      let next = 1;
+      const stack = new Int32Array(w * h);
+      for (let i0 = 0; i0 < w * h; i0++) {
+        if (!m2[i0] || label[i0]) continue;
+        const rowMin = new Map(), rowMax = new Map();
+        let sp = 0, minX = w, maxX = 0, minY = h, maxY = 0;
+        stack[sp++] = i0; label[i0] = next;
+        while (sp) {
+          const i = stack[--sp], x = i % w, y = (i / w) | 0;
+          if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y;
+          const a = rowMin.get(y); if (a === undefined || x < a) rowMin.set(y, x);
+          const b = rowMax.get(y); if (b === undefined || x > b) rowMax.set(y, x);
+          if (x > 0 && m2[i - 1] && !label[i - 1]) { label[i - 1] = next; stack[sp++] = i - 1; }
+          if (x < w - 1 && m2[i + 1] && !label[i + 1]) { label[i + 1] = next; stack[sp++] = i + 1; }
+          if (y > 0 && m2[i - w] && !label[i - w]) { label[i - w] = next; stack[sp++] = i - w; }
+          if (y < h - 1 && m2[i + w] && !label[i + w]) { label[i + w] = next; stack[sp++] = i + w; }
+        }
+        next++;
+        if ((maxX - minX) * (maxY - minY) < w * h * 0.02) continue;
+        const pts = [];
+        for (const [y, x] of rowMin) pts.push([x, y]);
+        for (const [y, x] of rowMax) pts.push([x + 1, y]);
+        const mq = maxQuad(convexHull(pts));
+        if (mq && mq.area > w * h * 0.02) cands.push({ area: mq.area, quad: orderCorners(mq.quad) });
+      }
+    }
+    cands.sort((a, b) => b.area - a.area);
+    return cands.map((c) => c.quad);
+  }
+
+  // 補正前に、色見本の位置だけを少し拾って「4色がちゃんと分かれているか」を見る
+  function quickCheck(img, quad, s) {
+    const dstPts = [[BORDER[0], BORDER[1]], [BORDER[2] + 1, BORDER[1]], [BORDER[2] + 1, BORDER[3] + 1], [BORDER[0], BORDER[3] + 1]].map(([x, y]) => [x * s, y * s]);
+    const Hm = homography(dstPts, quad);
+    const { w, h, data } = img;
+    function sample(box) {
+      const ch = [[], [], []];
+      for (let j = 0; j < 4; j++) for (let i = 0; i < 6; i++) {
+        const X = (box[0] + (box[2] - box[0]) * (i + 0.5) / 6) * s, Y = (box[1] + (box[3] - box[1]) * (j + 0.5) / 4) * s;
+        const d = Hm[6] * X + Hm[7] * Y + 1;
+        const sx = Math.round((Hm[0] * X + Hm[1] * Y + Hm[2]) / d), sy = Math.round((Hm[3] * X + Hm[4] * Y + Hm[5]) / d);
+        if (sx < 0 || sy < 0 || sx >= w || sy >= h) return null;
+        const o = (sy * w + sx) * 3; ch[0].push(data[o]); ch[1].push(data[o + 1]); ch[2].push(data[o + 2]);
+      }
+      return ch.map((a) => { a.sort((p, q) => p - q); return a[a.length >> 1]; });
+    }
+    const pal = [
+      sample([40, BORDER[1] + 2, 360, BORDER[1] + BW - 2]), sample([14, 40, 28, 260]),
+      sample([PATCH_R[0] + 3, PATCH_R[1] + 2, PATCH_R[2] - 3, PATCH_R[3] - 2]),
+      sample([PATCH_Y[0] + 3, PATCH_Y[1] + 2, PATCH_Y[2] - 3, PATCH_Y[3] - 2]),
+    ];
+    if (pal.some((p) => !p)) return false;
+    for (let a = 0; a < 4; a++) for (let b = a + 1; b < 4; b++)
+      if (Math.hypot(pal[a][0] - pal[b][0], pal[a][1] - pal[b][1], pal[a][2] - pal[b][2]) < 40) return false;
+    return true;
+  }
+
+  // RGB画像（3ch）から読み取る。成功すると { text, warped }、失敗すると null
+  function decode(img, key) {
+    if (img.w === W && img.h === H) {
+      const raw = readLayout(img, 1);
+      const text = raw && unpack(raw, key);
+      if (text !== null && text !== undefined && raw) return { text, warped: img, scale: 1 };
+    }
+    const s = 2;
+    for (const quad of findQuads(img).slice(0, 12)) {
+      for (let rot = 0; rot < 4; rot++) {
+        const q = [0, 1, 2, 3].map((i) => quad[(i + rot) % 4]);
+        if (!quickCheck(img, q, s)) continue;
+        const warped = warp(img, q, s);
+        const raw = readLayout(warped, s);
+        if (!raw) continue;
+        const text = unpack(raw, key);
+        if (text !== null) return { text, warped, scale: s };
+      }
+    }
+    return null;
+  }
+
+  const api = { W, H, PAL, MAXP, encode, toRGBA, decode, byteLength, sha256, renderCode, SYMBOLS };
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
+  else root.TileCipher = api;
+})(typeof window !== "undefined" ? window : globalThis);
