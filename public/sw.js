@@ -1,6 +1,6 @@
 // オフラインでも開けるよう、アプリのファイルを端末に保存しておく
 // アプリを更新したら CACHE の番号を上げる（v1 → v2）と、新しいファイルに入れ替わる
-const CACHE = "tile-cipher-v4";
+const CACHE = "tile-cipher-v5";
 const APP_FILES = [
   "./", "index.html", "app.js", "core.js", "worker.js", "encoding.min.js", "manifest.webmanifest",
   "icons/icon-192.png", "icons/icon-512.png", "icons/apple-touch-icon.png", "icons/favicon-64.png",
@@ -12,9 +12,10 @@ self.addEventListener("install", (e) => {
 });
 
 self.addEventListener("activate", (e) => {
+  // 同じ yannsi.github.io にある他の作品の保存は消さない（自分の古い版だけ消す）
   e.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE && k !== FONT_CACHE).map((k) => caches.delete(k))))
+      .then((keys) => Promise.all(keys.filter((k) => k.startsWith("tile-cipher-") && k !== CACHE && k !== FONT_CACHE).map((k) => caches.delete(k))))
       .then(() => self.clients.claim())
   );
 });

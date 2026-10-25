@@ -1,6 +1,6 @@
 (() => {
   "use strict";
-  const VERSION = "v1.3";
+  const VERSION = "v1.3.1";
   const TC = window.TileCipher;
   const $ = (id) => document.getElementById(id);
   $("ver").textContent = VERSION;
